@@ -1117,7 +1117,6 @@ esp_err_t i2c_new_master_bus(const i2c_master_bus_config_t *bus_config, i2c_mast
     xSemaphoreGive(i2c_master->bus_lock_mux);
     // Initialize the queue
     if (bus_config->trans_queue_depth) {
-        ESP_LOGW(TAG, "Please note i2c asynchronous is only used for specific scenario currently. It's experimental for other users because user cannot get bus error from API. And It's not compatible with ``i2c_master_probe``. If user makes sure there won't be any error on bus and tested with no problem, this message can be ignored.");
         i2c_master->async_trans = true;
         i2c_master->sent_all = true;
         i2c_master->trans_finish = true;
