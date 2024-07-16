@@ -713,6 +713,7 @@ typedef struct {
 typedef struct {
     BT_HDR                  hdr;
     uint16_t                icon;
+    tBTA_SET_LOCAL_ICON_CBACK *set_local_icon_cback;
 } tBTA_DM_API_LOCAL_ICON;
 
 /* set scan parameter for BLE connections */

@@ -5339,7 +5339,7 @@ void bta_dm_ble_config_local_privacy (tBTA_DM_MSG *p_data)
 *******************************************************************************/
 void bta_dm_ble_config_local_icon (tBTA_DM_MSG *p_data)
 {
-    BTM_BleConfigLocalIcon (p_data->ble_local_icon.icon);
+    BTM_BleConfigLocalIcon (p_data->ble_local_icon.icon, p_data->ble_local_icon.set_local_icon_cback);
 }
 
 /*******************************************************************************

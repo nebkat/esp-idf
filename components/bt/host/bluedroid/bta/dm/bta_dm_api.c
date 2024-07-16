@@ -2162,7 +2162,7 @@ void BTA_DmBleConfigLocalPrivacy(BOOLEAN privacy_enable, tBTA_SET_LOCAL_PRIVACY_
 ** Returns          void
 **
 *******************************************************************************/
-void BTA_DmBleConfigLocalIcon(uint16_t icon)
+void BTA_DmBleConfigLocalIcon(uint16_t icon, tBTA_SET_LOCAL_ICON_CBACK *set_local_icon_cback)
 {
     tBTA_DM_API_LOCAL_ICON *p_msg;
 
@@ -2171,6 +2171,7 @@ void BTA_DmBleConfigLocalIcon(uint16_t icon)
 
         p_msg->hdr.event = BTA_DM_API_LOCAL_ICON_EVT;
         p_msg->icon   = icon;
+        p_msg->set_local_icon_cback = set_local_icon_cback;
         bta_sys_sendmsg(p_msg);
     }
 }

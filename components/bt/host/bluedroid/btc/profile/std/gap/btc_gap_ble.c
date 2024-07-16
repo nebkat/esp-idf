@@ -891,6 +891,23 @@ static void btc_set_local_privacy_callback(UINT8 status)
     }
 }
 
+static void btc_set_local_icon_callback(UINT8 status)
+{
+    esp_ble_gap_cb_param_t param;
+    bt_status_t ret;
+    btc_msg_t msg = {0};
+    msg.sig = BTC_SIG_API_CB;
+    msg.pid = BTC_PID_GAP_BLE;
+    msg.act = ESP_GAP_BLE_SET_LOCAL_ICON_COMPLETE_EVT;
+    param.local_icon_cmpl.status = btc_btm_status_to_esp_status(status);
+    ret = btc_transfer_context(&msg, &param,
+                               sizeof(esp_ble_gap_cb_param_t), NULL, NULL);
+
+    if (ret != BT_STATUS_SUCCESS) {
+        BTC_TRACE_ERROR("%s btc_transfer_context failed\n", __func__);
+    }
+}
+
 static void btc_set_rpa_timeout_callback(UINT8 status)
 {
     esp_ble_gap_cb_param_t param;
@@ -1410,9 +1427,9 @@ static void btc_ble_set_pkt_data_len(BD_ADDR remote_device, uint16_t tx_data_len
     BTA_DmBleSetDataLength(remote_device, tx_data_length, p_set_pkt_data_cback);
 }
 
-static void btc_ble_config_local_icon(uint16_t icon)
+static void btc_ble_config_local_icon(uint16_t icon, tBTA_SET_LOCAL_ICON_CBACK *set_local_icon_cback)
 {
-    BTA_DmBleConfigLocalIcon(icon);
+    BTA_DmBleConfigLocalIcon(icon, set_local_icon_cback);
 }
 
 static void btc_ble_set_rand_addr (BD_ADDR rand_addr, tBTA_SET_RAND_ADDR_CBACK *p_set_rand_addr_cback)
@@ -1971,7 +1988,7 @@ void btc_gap_ble_call_handler(btc_msg_t *msg)
         btc_ble_config_local_privacy(arg->cfg_local_privacy.privacy_enable, btc_set_local_privacy_callback);
         break;
     case BTC_GAP_BLE_ACT_CONFIG_LOCAL_ICON:
-        btc_ble_config_local_icon(arg->cfg_local_icon.icon);
+        btc_ble_config_local_icon(arg->cfg_local_icon.icon, btc_set_local_icon_callback);
         break;
     case BTC_GAP_BLE_ACT_UPDATE_WHITE_LIST:
         BTA_DmUpdateWhiteList(arg->update_white_list.add_remove, arg->update_white_list.remote_bda, arg->update_white_list.wl_addr_type, btc_update_whitelist_complete_callback);

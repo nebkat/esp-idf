@@ -229,6 +229,7 @@ typedef enum {
     ESP_GAP_BLE_ADD_DEV_TO_RESOLVING_LIST_COMPLETE_EVT,          /*!< when add a device to the resolving list completes, the event comes*/
     ESP_GAP_BLE_VENDOR_CMD_COMPLETE_EVT,                         /*!< When vendor hci command complete, the event comes */
     ESP_GAP_BLE_SET_PRIVACY_MODE_COMPLETE_EVT,                   /*!< When set privacy mode complete, the event comes */
+    ESP_GAP_BLE_SET_LOCAL_ICON_COMPLETE_EVT,                     /*!< When set local icon complete, the event comes */
     ESP_GAP_BLE_EVT_MAX,                                         /*!< when maximum advertising event complete, the event comes */
 } esp_gap_ble_cb_event_t;
 
@@ -1195,6 +1196,12 @@ typedef union {
     struct ble_local_privacy_cmpl_evt_param {
         esp_bt_status_t status;                     /*!< Indicate the set local privacy operation success status */
     } local_privacy_cmpl;                           /*!< Event parameter of ESP_GAP_BLE_SET_LOCAL_PRIVACY_COMPLETE_EVT */
+    /**
+     * @brief ESP_GAP_BLE_SET_LOCAL_ICON_COMPLETE_EVT
+     */
+    struct ble_local_icon_cmpl_evt_param {
+        esp_bt_status_t status;                     /*!< Indicate the set local icon operation success status */
+    } local_icon_cmpl;                              /*!< Event parameter of ESP_GAP_BLE_SET_LOCAL_ICON_COMPLETE_EVT */
     /**
      * @brief ESP_GAP_BLE_SET_RPA_TIMEOUT_COMPLETE_EVT
      */

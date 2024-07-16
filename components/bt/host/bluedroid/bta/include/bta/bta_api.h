@@ -433,6 +433,8 @@ typedef tBTM_SET_RAND_ADDR_CBACK tBTA_SET_RAND_ADDR_CBACK;
 
 typedef tBTM_SET_LOCAL_PRIVACY_CBACK tBTA_SET_LOCAL_PRIVACY_CBACK;
 
+typedef tBTM_SET_LOCAL_ICON_CBACK tBTA_SET_LOCAL_ICON_CBACK;
+
 typedef tBTM_SET_RPA_TIMEOUT_CMPL_CBACK tBTA_SET_RPA_TIMEOUT_CMPL_CBACK;
 
 typedef tBTM_ADD_DEV_TO_RESOLVING_LIST_CMPL_CBACK tBTA_ADD_DEV_TO_RESOLVING_LIST_CMPL_CBACK;
@@ -2647,11 +2649,12 @@ extern void BTA_DmBleConfigLocalPrivacy(BOOLEAN privacy_enable, tBTA_SET_LOCAL_P
 ** Description      set gap local icon
 **
 ** Parameters:      icon   - appearance value.
+**                  set_local_icon_cback -callback to be called with result
 **
 ** Returns          void
 **
 *******************************************************************************/
-extern void BTA_DmBleConfigLocalIcon(uint16_t icon);
+extern void BTA_DmBleConfigLocalIcon(uint16_t icon, tBTA_SET_LOCAL_ICON_CMPL_CBACK *set_local_icon_cback);
 
 /*******************************************************************************
 **
