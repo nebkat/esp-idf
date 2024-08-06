@@ -3,6 +3,7 @@ set(src "test_app_main.c" "test_vfs_access.c"
         "test_vfs_fd.c" "test_vfs_lwip.c"
         "test_vfs_open.c" "test_vfs_paths.c"
         "test_vfs_select.c"
+        "test_std_filesystem.cpp"
         )
 
 idf_component_register(SRCS ${src}
