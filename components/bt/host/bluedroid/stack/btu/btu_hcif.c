@@ -887,7 +887,7 @@ static void btu_hcif_disconnection_comp_evt (UINT8 *p)
     }
 #endif // #if (BLE_FEAT_ISO_CIG_EN == TRUE)
 
-    HCI_TRACE_WARNING("hcif disc complete: hdl 0x%x, rsn 0x%x dev_find %d", handle, reason, dev_find);
+    HCI_TRACE_EVENT("hcif disc complete: hdl 0x%x, rsn 0x%x dev_find %d", handle, reason, dev_find);
 
     UNUSED(dev_find);
 }
