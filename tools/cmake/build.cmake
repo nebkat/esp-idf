@@ -156,7 +156,7 @@ function(__build_set_default_build_specifications)
         # Please update docs/en/api-guides/c.rst, docs/en/api-guides/cplusplus.rst and
         # tools/test_apps/system/cxx_build_test/main/test_cxx_standard.cpp when changing this.
         list(APPEND c_compile_options   "-std=gnu17")
-        list(APPEND cxx_compile_options "-std=gnu++2b")
+        list(APPEND cxx_compile_options "-std=gnu++2c")
     endif()
 
     idf_build_set_property(COMPILE_DEFINITIONS "${compile_definitions}" APPEND)
@@ -194,7 +194,7 @@ function(__linux_build_set_lang_version)
                             "${preferred_c_versions}. Please upgrade the host compiler.")
     endif()
 
-    set(preferred_cxx_versions gnu++2b gnu++20 gnu++2a gnu++17 gnu++14)
+    set(preferred_cxx_versions gnu++2c gnu++2b gnu++20 gnu++2a gnu++17 gnu++14)
     set(ver_found FALSE)
     foreach(cxx_version ${preferred_cxx_versions})
         check_cxx_compiler_flag("-std=${cxx_version}" ver_${cxx_version}_supported)
