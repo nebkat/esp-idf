@@ -492,6 +492,15 @@ esp_err_t httpd_sess_trigger_close(httpd_handle_t handle, int sockfd)
     return httpd_sess_trigger_close_(handle, session);
 }
 
+esp_err_t httpd_sess_trigger_close_async(httpd_handle_t handle, int sockfd) {
+    struct sock_db *session = httpd_sess_get(handle, sockfd);
+    if (!session) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    httpd_sess_close(session);
+    return ESP_OK;
+}
+
 void httpd_sess_close_all(struct httpd_data *hd)
 {
     enum_context_t context = {
