@@ -1630,6 +1630,23 @@ void *httpd_get_global_transport_ctx(httpd_handle_t handle);
 esp_err_t httpd_sess_trigger_close(httpd_handle_t handle, int sockfd);
 
 /**
+ * @brief   Trigger an httpd session close externally
+ *
+ * @note    Calling this API is only required in special circumstances wherein
+ *          some application requires to close an httpd client session asynchronously.
+ *
+ * @param[in] handle    Handle to server returned by httpd_start
+ * @param[in] sockfd    The socket descriptor of the session to be closed
+ *
+ * @return
+ *  - ESP_OK    : On successfully initiating closure
+ *  - ESP_FAIL  : Failure to queue work
+ *  - ESP_ERR_NOT_FOUND   : Socket fd not found
+ *  - ESP_ERR_INVALID_ARG : Null arguments
+ */
+esp_err_t httpd_sess_trigger_close_async(httpd_handle_t handle, int sockfd);
+
+/**
  * @brief   Update LRU counter for a given socket
  *
  * LRU Counters are internally associated with each session to monitor
