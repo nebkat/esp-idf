@@ -224,12 +224,16 @@ static int ssl_write(esp_transport_handle_t t, const char *buffer, int len, int 
     ESP_STATIC_ANALYZER_CHECK(ssl == NULL, -1);
 
     if ((poll = esp_transport_poll_write(t, timeout_ms)) <= 0) {
-        ESP_LOGW(TAG, "Poll timeout or error, errno=%s, fd=%d, timeout_ms=%d", strerror(errno), ssl->sockfd, timeout_ms);
+        if (poll == 0) {
+            ESP_LOGD(TAG, "ssl_write timeout, fd=%d, timeout_ms=%d", ssl->sockfd, timeout_ms);
+        } else {
+            ESP_LOGW(TAG, "ssl_write poll error, errno=%s, fd=%d, timeout_ms=%d", strerror(errno), ssl->sockfd, timeout_ms);
+        }
         return poll;
     }
     int ret = esp_tls_conn_write(ssl->tls, (const unsigned char *) buffer, len);
     if (ret < 0) {
-        ESP_LOGE(TAG, "esp_tls_conn_write error, errno=%s", strerror(errno));
+        ESP_LOGE(TAG, "ssl_write error, errno=%s", strerror(errno));
         esp_tls_error_handle_t esp_tls_error_handle;
         if (esp_tls_get_error_handle(ssl->tls, &esp_tls_error_handle) == ESP_OK) {
             esp_transport_set_errors(t, esp_tls_error_handle);
@@ -247,7 +251,11 @@ static int tcp_write(esp_transport_handle_t t, const char *buffer, int len, int 
     ESP_STATIC_ANALYZER_CHECK(ssl == NULL, -1);
 
     if ((poll = esp_transport_poll_write(t, timeout_ms)) <= 0) {
-        ESP_LOGW(TAG, "Poll timeout or error, errno=%s, fd=%d, timeout_ms=%d", strerror(errno), ssl->sockfd, timeout_ms);
+        if (poll == 0) {
+            ESP_LOGD(TAG, "tcp_write timeout, fd=%d, timeout_ms=%d", ssl->sockfd, timeout_ms);
+        } else {
+            ESP_LOGW(TAG, "tcp_write poll error, errno=%s, fd=%d, timeout_ms=%d", strerror(errno), ssl->sockfd, timeout_ms);
+        }
         return poll;
     }
     int ret = send(ssl->sockfd, (const unsigned char *) buffer, len, 0);
@@ -275,10 +283,10 @@ static int ssl_read(esp_transport_handle_t t, char *buffer, int len, int timeout
     if (ret < 0) {
         if (ret == ESP_TLS_ERR_SSL_WANT_READ || ret == ESP_TLS_ERR_SSL_TIMEOUT) {
             ret = ERR_TCP_TRANSPORT_CONNECTION_TIMEOUT;
-            ESP_LOGD(TAG, "esp_tls_conn_read error, errno=%s", strerror(errno));
+            ESP_LOGD(TAG, "ssl_read error, errno=%s", strerror(errno));
         }
         else {
-            ESP_LOGE(TAG, "esp_tls_conn_read error, errno=%s", strerror(errno));
+            ESP_LOGE(TAG, "ssl_read error, errno=%s", strerror(errno));
         }
 
         esp_tls_error_handle_t esp_tls_error_handle;
