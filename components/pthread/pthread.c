@@ -578,10 +578,12 @@ pthread_t pthread_self(void)
 {
     _lock_acquire(&s_threads_lock);
 
-    esp_pthread_t *pthread = pthread_find(xTaskGetCurrentTaskHandle());
-    if (!pthread) {
-        assert(false && "Failed to find current thread ID!");
-    }
+    TaskHandle_t pthread = xTaskGetCurrentTaskHandle();
+
+    // esp_pthread_t *pthread = pthread_find(xTaskGetCurrentTaskHandle());
+    // if (!pthread) {
+    //     assert(false && "Failed to find current thread ID!");
+    // }
     _lock_release(&s_threads_lock);
     return (pthread_t)pthread;
 }
