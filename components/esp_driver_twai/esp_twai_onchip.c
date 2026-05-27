@@ -611,7 +611,7 @@ static esp_err_t _node_queue_tx(twai_node_handle_t node, const twai_frame_t *fra
             if (dequeue_result == pdTRUE) {
                 _node_start_trans(twai_ctx);
             } else {
-                assert(false && "should always get frame at this moment");
+                atomic_store(&twai_ctx->hw_busy, false);
             }
         }
 
