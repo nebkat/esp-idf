@@ -246,6 +246,23 @@ static void httpd_process_ctrl_msg(struct httpd_data *hd)
     xSemaphoreGive(hd->ctrl_sock_semaphore);
 }
 
+/* Run any work still queued behind the shutdown message instead of dropping it
+ * (which would leak whatever its argument owns) when the thread exits. Called
+ * before sessions close so queued work that uses a connection still sees it. */
+static void httpd_drain_ctrl_msgs(struct httpd_data *hd)
+{
+    fd_set read_set;
+    struct timeval timeout = { .tv_sec = 0, .tv_usec = 0 };
+    while (1) {
+        FD_ZERO(&read_set);
+        FD_SET(hd->ctrl_fd, &read_set);
+        if (select(hd->ctrl_fd + 1, &read_set, NULL, NULL, &timeout) <= 0) {
+            break;
+        }
+        httpd_process_ctrl_msg(hd);
+    }
+}
+
 // Called for each session from httpd_server
 static int httpd_process_session(struct sock_db *session, void *context)
 {
@@ -346,6 +363,7 @@ static void httpd_thread(void *arg)
     }
 
     ESP_LOGD(TAG, LOG_FMT("web server exiting"));
+    httpd_drain_ctrl_msgs(hd);
     close(hd->msg_fd);
     cs_free_ctrl_sock(hd->ctrl_fd);
     httpd_sess_close_all(hd);

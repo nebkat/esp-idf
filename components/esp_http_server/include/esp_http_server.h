@@ -341,7 +341,8 @@ esp_err_t httpd_start(httpd_handle_t *handle, const httpd_config_t *config);
  *
  * Deallocates memory/resources used by an HTTP server instance and
  * deletes it. Once deleted the handle can no longer be used for accessing
- * the instance.
+ * the instance. Any work still pending via httpd_queue_work() is executed
+ * before the instance is deleted.
  *
  * Example usage:
  * @code{c}
@@ -1702,6 +1703,9 @@ typedef void (*httpd_work_fn_t)(void *arg);
  * @note    Some protocols require that the web server generate some asynchronous data
  *          and send it to the persistently opened connection. This facility is for use
  *          by such protocols.
+ *
+ * @note    Work that is successfully queued is always executed, even if the server is
+ *          stopped concurrently: any still-pending work is run as part of httpd_stop().
  *
  * @param[in] handle    Handle to server returned by httpd_start
  * @param[in] work      Pointer to the function to be executed in the HTTPD's context
