@@ -203,6 +203,112 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
         finally:
             signal.signal(signal.SIGINT, old_handler)
 
+    def addr2line(
+        action: str,
+        ctx: click.core.Context,
+        args: PropertyDict,
+        addresses: tuple[str],
+        input_file: str,
+        panic: bool,
+        no_color: bool,
+    ) -> None:
+        """
+        Decode addresses or panic/backtrace output into source locations.
+
+        Mirrors the panic/backtrace decoding done live by IDF Monitor, but operates on text that is
+        provided on the command line, read from a file (--input) or piped in via stdin. This is handy for
+        decoding a stack dump that was copy-pasted from a log, a serial capture or a bug report.
+        """
+        # Imported lazily so that the rest of idf.py works even if the decoder package is unavailable.
+        from esp_idf_monitor.base.rom_elf_getter import get_rom_elf_path
+        from esp_idf_panic_decoder import PanicOutputDecoder
+        from esp_idf_panic_decoder import PcAddressDecoder
+        from esp_idf_panic_decoder.pc_address_decoder import PcAddressLocation
+
+        # ANSI colors, matching the scheme used by IDF Monitor when it decodes addresses inline.
+        ANSI_RED = '\033[1;31m'
+        ANSI_GREEN = '\033[0;32m'
+        ANSI_YELLOW = '\033[0;33m'
+        ANSI_NORMAL = '\033[0m'
+        COMMON_PREFIX = '---'
+
+        use_color = not no_color and sys.stdout.isatty() and not os.environ.get('NO_COLOR')
+
+        def colorize(message: str, color: str) -> str:
+            return f'{color}{message}{ANSI_NORMAL}' if use_color else message
+
+        project_desc = _get_project_desc(ctx, args)
+        target = project_desc['target']
+        toolchain_prefix = project_desc['monitor_toolprefix']
+
+        # Collect the project ELF files, with the main application ELF first (same order IDF Monitor uses).
+        elf_file = os.path.join(args.build_dir, project_desc['app_elf'])
+        elf_list = [str(elf) for elf in Path(args.build_dir).rglob('*.elf')]
+        if elf_file and elf_file in elf_list:
+            elf_list.insert(0, elf_list.pop(elf_list.index(elf_file)))
+        if not elf_list:
+            raise FatalError(
+                f'No ELF files found in the build directory ({args.build_dir}). '
+                'Build the project first with "idf.py build".'
+            )
+
+        # ROM ELF file is optional; it lets addresses pointing into ROM be resolved as well.
+        rom_elf_file = get_rom_elf_path(target, int(project_desc.get('min_rev') or 0))
+
+        # Gather the text to decode from positional addresses, a file, or stdin.
+        if addresses:
+            text = ' '.join(addresses)
+        elif input_file:
+            text = Path(input_file).read_text(encoding='utf-8', errors='ignore')
+        else:
+            if sys.stdin.isatty():
+                yellow_print('Reading panic/backtrace output from stdin, press Ctrl-D (Ctrl-Z on Windows) to finish...')
+            text = sys.stdin.read()
+
+        if not text.strip():
+            raise FatalError('No input to decode. Pass addresses, use --input FILE or pipe text via stdin.')
+
+        if panic:
+            # Reconstruct a full backtrace from a register/stack dump using gdb, just like IDF Monitor does
+            # when it detects a panic. Requires the complete panic output (registers + stack memory).
+            decoder = PanicOutputDecoder(toolchain_prefix, elf_list, target)
+            try:
+                out = decoder.process_panic_output(text.encode())
+            except Exception as e:
+                raise FatalError(f'Failed to decode panic output: {e}')
+            sys.stdout.write(out.decode(errors='ignore'))
+            if not out.endswith(b'\n'):
+                sys.stdout.write('\n')
+            return
+
+        # Address translation mode: find executable addresses in each line and print their source
+        # locations, formatted and colored exactly like IDF Monitor's inline address decoding.
+        decoder = PcAddressDecoder(toolchain_prefix, elf_list, rom_elf_file)
+
+        def format_entry(entry: PcAddressLocation) -> str:
+            func = colorize(entry.func, ANSI_YELLOW)
+            if entry.path == 'ROM':
+                return f'{func} in {colorize("ROM", ANSI_GREEN)}'
+            location = colorize(entry.path, ANSI_GREEN)
+            if entry.line:
+                location += f':{colorize(entry.line, ANSI_RED)}'
+            return f'{func} at {location}'
+
+        found = False
+        for line in text.splitlines():
+            for address, trace in decoder.translate_addresses(line):
+                found = True
+                prefix = f'{COMMON_PREFIX} ' if use_color else ''
+                if not trace:
+                    print(f'{prefix}{address}: ' + colorize('(unknown)', ANSI_RED))
+                    continue
+                print(f'{prefix}{address}: {format_entry(trace[0])}')
+                for entry in trace[1:]:
+                    print(f'{prefix}(inlined by) {format_entry(entry)}')
+
+        if not found:
+            yellow_print('No decodable addresses found in the input.')
+
     def flash(
         action: str,
         ctx: click.core.Context,
@@ -1106,6 +1212,41 @@ def action_extensions(base_actions: dict, project_path: str) -> dict:
                 'arguments': [
                     {
                         'names': ['efuse-positional-args'],
+                        'nargs': -1,
+                    },
+                ],
+            },
+            'addr2line': {
+                'callback': addr2line,
+                'help': (
+                    'Decode addresses or panic/backtrace output into source locations. '
+                    'Reads from positional ADDRESSES, from --input FILE, or from stdin, and prints the '
+                    'decoded locations the same way IDF Monitor does.'
+                ),
+                'options': [
+                    {
+                        'names': ['--input', '-i', 'input_file'],
+                        'type': click.Path(exists=True, dir_okay=False),
+                        'default': None,
+                        'help': 'Read the text to decode from a file instead of stdin.',
+                    },
+                    {
+                        'names': ['--panic'],
+                        'is_flag': True,
+                        'help': (
+                            'Reconstruct a full backtrace from a complete panic register/stack dump using gdb '
+                            '(as IDF Monitor does on a crash) instead of just translating individual addresses.'
+                        ),
+                    },
+                    {
+                        'names': ['--no-color'],
+                        'is_flag': True,
+                        'help': 'Disable colored output.',
+                    },
+                ],
+                'arguments': [
+                    {
+                        'names': ['addresses'],
                         'nargs': -1,
                     },
                 ],
