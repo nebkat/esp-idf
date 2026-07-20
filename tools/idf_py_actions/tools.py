@@ -592,7 +592,15 @@ def run_target(
     if env is None:
         env = {}
 
-    generator_cmd = GENERATORS[args.generator]['command']
+    generator_cmd = list(GENERATORS[args.generator]['command'])
+
+    # Parallel jobs from -j/--jobs (or IDF_PY_BUILD_JOBS), falling back to the generator's default.
+    jobs = getattr(args, 'jobs', None)
+    if jobs is None:
+        jobs = GENERATORS[args.generator].get('default_jobs')
+
+    if jobs is not None:
+        generator_cmd += ['-j', str(jobs)]
 
     if args.verbose:
         generator_cmd += [GENERATORS[args.generator]['verbose_flag']]
