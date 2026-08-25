@@ -12,6 +12,8 @@
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_check.h"
+#include "esp_memory_utils.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -159,6 +161,8 @@ typedef struct {
     uint8_t tx_brk_len;                 /*!< TX break signal cycle length/number */
     uint8_t tx_waiting_brk;             /*!< Flag to indicate that TX FIFO is ready to send break signal after FIFO is empty, do not push data into TX FIFO right now.*/
     uart_select_notif_callback_t uart_select_notif_callback; /*!< Notification about select() events */
+    uart_event_callbacks_t cbs;         /*!< User event callbacks, registered by uart_register_event_callbacks() */
+    void *user_ctx;                     /*!< User context passed to the event callbacks */
     QueueHandle_t event_queue;          /*!< UART event queue handler*/
     RingbufHandle_t rx_ring_buf;        /*!< RX ring buffer handler*/
     RingbufHandle_t tx_ring_buf;        /*!< TX ring buffer handler*/
@@ -1219,6 +1223,94 @@ static uint32_t UART_ISR_ATTR uart_enable_tx_write_fifo(uart_port_t uart_num, co
     return sent_len;
 }
 
+// Deliver an event that the ISR has just produced to the user event callbacks.
+// Returns true if a callback woke a higher priority task.
+static bool UART_ISR_ATTR uart_dispatch_callbacks(uart_obj_t *p_uart, const uart_event_t *event)
+{
+    const uart_event_callbacks_t *cbs = &p_uart->cbs;
+    uart_port_t uart_num = p_uart->uart_num;
+    void *user_ctx = p_uart->user_ctx;
+    bool need_yield = false;
+
+    switch (event->type) {
+    case UART_DATA:
+        if (cbs->on_rx_data) {
+            uart_rx_data_event_data_t edata = {
+                .size = event->size,
+                .timeout_flag = event->timeout_flag,
+            };
+            need_yield |= cbs->on_rx_data(uart_num, &edata, user_ctx);
+        }
+        break;
+    case UART_BREAK:
+        if (cbs->on_rx_break) {
+            uart_rx_break_event_data_t edata = {};
+            need_yield |= cbs->on_rx_break(uart_num, &edata, user_ctx);
+        }
+        break;
+    case UART_PATTERN_DET:
+        if (cbs->on_pattern) {
+            uart_pattern_event_data_t edata = {
+                .size = event->size,
+            };
+            need_yield |= cbs->on_pattern(uart_num, &edata, user_ctx);
+        }
+        break;
+    case UART_BUFFER_FULL:
+    case UART_FIFO_OVF:
+    case UART_FRAME_ERR:
+    case UART_PARITY_ERR:
+        if (cbs->on_rx_error) {
+            uart_rx_error_event_data_t edata = {
+                .type = event->type,
+            };
+            need_yield |= cbs->on_rx_error(uart_num, &edata, user_ctx);
+        }
+        break;
+#if SOC_UART_SUPPORT_WAKEUP_INT
+    case UART_WAKEUP:
+        if (cbs->on_wakeup) {
+            uart_wakeup_event_data_t edata = {};
+            need_yield |= cbs->on_wakeup(uart_num, &edata, user_ctx);
+        }
+        break;
+#endif
+    default:
+        break;
+    }
+    return need_yield;
+}
+
+// Deliver a "TX done" event to the user callback. `tx_idle` tells apart TX ring buffer space having been
+// freed from the transmitter having gone idle.
+static bool UART_ISR_ATTR uart_dispatch_tx_done_callback(uart_obj_t *p_uart, bool tx_idle)
+{
+    if (!p_uart->cbs.on_tx_done) {
+        return false;
+    }
+    uart_tx_done_event_data_t edata = {
+        .flags = {
+            .tx_idle = tx_idle,
+        },
+    };
+    return p_uart->cbs.on_tx_done(p_uart->uart_num, &edata, p_uart->user_ctx);
+}
+
+// Arm a one-shot UART_INTR_TX_DONE, so that a registered on_tx_done callback learns when the transmitter
+// goes idle. Without this the interrupt is only ever enabled by uart_wait_tx_done() and by RS485 half
+// duplex mode, and a callback-only user would never see the tx_idle event. Call with the last bytes of the
+// transaction already in the TX FIFO. Must be called from a critical section.
+static void UART_ISR_ATTR uart_arm_tx_done_intr(uart_port_t uart_num)
+{
+    if (uart_hal_get_intr_ena_status(&(uart_context[uart_num].hal)) & UART_INTR_TX_DONE) {
+        // Already armed, by uart_wait_tx_done() or by RS485 half duplex mode. Clearing the status here
+        // could drop a pending event, so leave it alone.
+        return;
+    }
+    uart_hal_clr_intsts_mask(&(uart_context[uart_num].hal), UART_INTR_TX_DONE);
+    uart_hal_ena_intr_mask(&(uart_context[uart_num].hal), UART_INTR_TX_DONE);
+}
+
 //internal isr handler for default driver code.
 static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
 {
@@ -1320,6 +1412,13 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
                             } else {
                                 //enable TX empty interrupt
                                 en_tx_flg = true;
+                                if (p_uart->trans_total_remaining_len == 0 && p_uart->cbs.on_tx_done) {
+                                    //The whole transaction is in the TX FIFO now, arm TX_DONE so that the
+                                    //callback learns when the transmitter goes idle.
+                                    UART_ENTER_CRITICAL_ISR(&(uart_context[uart_num].spinlock));
+                                    uart_arm_tx_done_intr(uart_num);
+                                    UART_EXIT_CRITICAL_ISR(&(uart_context[uart_num].spinlock));
+                                }
                             }
                             UART_ENTER_CRITICAL_ISR(&uart_selectlock);
                             if (p_uart->uart_select_notif_callback) {
@@ -1327,6 +1426,8 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
                                 need_yield |= (HPTaskAwoken == pdTRUE);
                             }
                             UART_EXIT_CRITICAL_ISR(&uart_selectlock);
+                            //TX ring buffer space has been returned
+                            need_yield |= uart_dispatch_tx_done_callback(p_uart, false);
                         } else {
                             //enable TX empty interrupt
                             en_tx_flg = true;
@@ -1396,13 +1497,16 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
                                                  p_uart->rx_buffered_len + pat_idx);
                         }
                         UART_EXIT_CRITICAL_ISR(&(uart_context[uart_num].spinlock));
-                        sent = xQueueSendFromISR(p_uart->event_queue, (void *)&uart_event, &HPTaskAwoken);
-                        need_yield |= (HPTaskAwoken == pdTRUE);
-                        if ((p_uart->event_queue != NULL) && (sent == pdFALSE)) {
+                        if (p_uart->event_queue) {
+                            sent = xQueueSendFromISR(p_uart->event_queue, (void *)&uart_event, &HPTaskAwoken);
+                            need_yield |= (HPTaskAwoken == pdTRUE);
+                            if (sent == pdFALSE) {
 #ifndef CONFIG_UART_ISR_IN_IRAM     //Only log if ISR is not in IRAM
-                            ESP_EARLY_LOGV(UART_TAG, "UART event queue full");
+                                ESP_EARLY_LOGV(UART_TAG, "UART event queue full");
 #endif
+                            }
                         }
+                        need_yield |= uart_dispatch_callbacks(p_uart, &uart_event);
                     }
                     uart_event.type = UART_BUFFER_FULL;
                 } else {
@@ -1528,6 +1632,7 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
                 UART_EXIT_CRITICAL_ISR(&(uart_context[uart_num].spinlock));
                 xSemaphoreGiveFromISR(p_uart_obj[uart_num]->tx_done_sem, &HPTaskAwoken);
                 need_yield |= (HPTaskAwoken == pdTRUE);
+                need_yield |= uart_dispatch_tx_done_callback(p_uart, true);
             }
         }
 #if SOC_UART_SUPPORT_WAKEUP_INT
@@ -1541,14 +1646,17 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
             uart_event.type = UART_EVENT_MAX;
         }
 
-        if (uart_event.type != UART_EVENT_MAX && p_uart->event_queue) {
-            sent = xQueueSendFromISR(p_uart->event_queue, (void *)&uart_event, &HPTaskAwoken);
-            need_yield |= (HPTaskAwoken == pdTRUE);
-            if (sent == pdFALSE) {
+        if (uart_event.type != UART_EVENT_MAX) {
+            if (p_uart->event_queue) {
+                sent = xQueueSendFromISR(p_uart->event_queue, (void *)&uart_event, &HPTaskAwoken);
+                need_yield |= (HPTaskAwoken == pdTRUE);
+                if (sent == pdFALSE) {
 #ifndef CONFIG_UART_ISR_IN_IRAM     //Only log if ISR is not in IRAM
-                ESP_EARLY_LOGV(UART_TAG, "UART event queue full");
+                    ESP_EARLY_LOGV(UART_TAG, "UART event queue full");
 #endif
+                }
             }
+            need_yield |= uart_dispatch_callbacks(p_uart, &uart_event);
         }
     }
     if (need_yield) {
@@ -1691,6 +1799,13 @@ static int uart_tx_all(uart_port_t uart_num, const char *src, size_t size, bool 
             uart_hal_ena_intr_mask(&(uart_context[uart_num].hal), UART_INTR_TX_BRK_DONE);
             UART_EXIT_CRITICAL(&(uart_context[uart_num].spinlock));
             xSemaphoreTake(p_uart_obj[uart_num]->tx_brk_sem, (TickType_t)portMAX_DELAY);
+        }
+        if (p_uart_obj[uart_num]->cbs.on_tx_done) {
+            //Everything is in the TX FIFO now, arm TX_DONE so that the callback learns when the
+            //transmitter goes idle.
+            UART_ENTER_CRITICAL(&(uart_context[uart_num].spinlock));
+            uart_arm_tx_done_intr(uart_num);
+            UART_EXIT_CRITICAL(&(uart_context[uart_num].spinlock));
         }
         xSemaphoreGive(p_uart_obj[uart_num]->tx_fifo_sem);
     }
@@ -2167,6 +2282,38 @@ esp_err_t uart_driver_delete(uart_port_t uart_num)
 bool uart_is_driver_installed(uart_port_t uart_num)
 {
     return uart_num < UART_NUM_MAX && (p_uart_obj[uart_num] != NULL);
+}
+
+esp_err_t uart_register_event_callbacks(uart_port_t uart_num, const uart_event_callbacks_t *cbs, void *user_data)
+{
+    ESP_RETURN_ON_FALSE((uart_num < UART_NUM_MAX), ESP_ERR_INVALID_ARG, UART_TAG, "uart_num error");
+    ESP_RETURN_ON_FALSE(cbs, ESP_ERR_INVALID_ARG, UART_TAG, "invalid argument");
+    ESP_RETURN_ON_FALSE(p_uart_obj[uart_num], ESP_ERR_INVALID_STATE, UART_TAG, "uart driver not installed");
+#if CONFIG_UART_ISR_IN_IRAM
+    ESP_RETURN_ON_FALSE(!cbs->on_rx_data || esp_ptr_in_iram(cbs->on_rx_data), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_rx_data callback not in IRAM");
+    ESP_RETURN_ON_FALSE(!cbs->on_rx_break || esp_ptr_in_iram(cbs->on_rx_break), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_rx_break callback not in IRAM");
+    ESP_RETURN_ON_FALSE(!cbs->on_pattern || esp_ptr_in_iram(cbs->on_pattern), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_pattern callback not in IRAM");
+    ESP_RETURN_ON_FALSE(!cbs->on_rx_error || esp_ptr_in_iram(cbs->on_rx_error), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_rx_error callback not in IRAM");
+    ESP_RETURN_ON_FALSE(!cbs->on_tx_done || esp_ptr_in_iram(cbs->on_tx_done), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_tx_done callback not in IRAM");
+#if SOC_UART_SUPPORT_WAKEUP_INT
+    ESP_RETURN_ON_FALSE(!cbs->on_wakeup || esp_ptr_in_iram(cbs->on_wakeup), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "on_wakeup callback not in IRAM");
+#endif
+    ESP_RETURN_ON_FALSE(!user_data || esp_ptr_internal(user_data), ESP_ERR_INVALID_ARG, UART_TAG,
+                        "user context not in internal RAM");
+#endif
+
+    // Update under the port spinlock, so that the ISR never sees a half written structure
+    UART_ENTER_CRITICAL(&(uart_context[uart_num].spinlock));
+    p_uart_obj[uart_num]->cbs = *cbs;
+    p_uart_obj[uart_num]->user_ctx = user_data;
+    UART_EXIT_CRITICAL(&(uart_context[uart_num].spinlock));
+    return ESP_OK;
 }
 
 void uart_set_select_notif_callback(uart_port_t uart_num, uart_select_notif_callback_t uart_select_notif_callback)
