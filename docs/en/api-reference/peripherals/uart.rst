@@ -243,7 +243,7 @@ Use Interrupts
 
 There are many interrupts that can be generated depending on specific UART states or detected errors. The full list of available interrupts is provided in *{IDF_TARGET_NAME} Technical Reference Manual* > *UART Controller (UART)* > *UART Interrupts* [`PDF <{IDF_TARGET_TRM_EN_URL}#uart>`__]. You can enable or disable specific interrupts by calling :cpp:func:`uart_enable_intr_mask` or :cpp:func:`uart_disable_intr_mask` respectively.
 
-The UART driver provides a convenient way to handle specific interrupts by wrapping them into corresponding events. Events defined in :cpp:type:`uart_event_type_t` can be reported to a user application using the FreeRTOS queue functionality.
+The UART driver provides a convenient way to handle specific interrupts by wrapping them into corresponding events. Events defined in :cpp:type:`uart_event_type_t` can be reported to a user application either using the FreeRTOS queue functionality, described below, or using ISR callbacks, described in :ref:`uart-api-register-event-callbacks`.
 
 To receive the events that have happened, call :cpp:func:`uart_driver_install` and get the event queue handle returned from the function. Please see the above :ref:`code snippet <driver-code-snippet>` as an example.
 
@@ -282,6 +282,65 @@ The processed events include the following:
 - **Other events**: The UART driver can report other events such as data receiving (:cpp:enumerator:`UART_DATA`), ring buffer full (:cpp:enumerator:`UART_BUFFER_FULL`), detecting NULL after the stop bit (:cpp:enumerator:`UART_BREAK`), parity check error (:cpp:enumerator:`UART_PARITY_ERR`), and frame error (:cpp:enumerator:`UART_FRAME_ERR`).
 
 The strings inside of brackets indicate corresponding event names. An example of how to handle various UART events can be found in :example:`peripherals/uart/uart_events`.
+
+.. _uart-api-register-event-callbacks:
+
+Register Event Callbacks
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Handling events through the queue requires a task that sits blocked on :cpp:func:`xQueueReceive`. If a dedicated task is not wanted, e.g. because the application already has an event loop of its own, the same events can be delivered as callbacks instead, by calling :cpp:func:`uart_register_event_callbacks`. Since the registered callback functions are called in the interrupt context, the user should ensure that the callback function is non-blocking, e.g., by making sure that only FreeRTOS APIs with the ``FromISR`` suffix are called from within the function. The callback function has a boolean return value used to indicate whether a higher priority task has been unblocked by the callback.
+
+The UART event callbacks are listed in :cpp:type:`uart_event_callbacks_t`:
+
+- :cpp:member:`uart_event_callbacks_t::on_rx_data` sets a callback function for the "RX data" event, matching :cpp:enumerator:`UART_DATA`.
+
+- :cpp:member:`uart_event_callbacks_t::on_rx_break` sets a callback function for the "RX break" event, matching :cpp:enumerator:`UART_BREAK`.
+
+- :cpp:member:`uart_event_callbacks_t::on_pattern` sets a callback function for the "pattern detected" event, matching :cpp:enumerator:`UART_PATTERN_DET`.
+
+- :cpp:member:`uart_event_callbacks_t::on_rx_error` sets a callback function for the "RX error" event, matching :cpp:enumerator:`UART_FIFO_OVF`, :cpp:enumerator:`UART_BUFFER_FULL`, :cpp:enumerator:`UART_FRAME_ERR` and :cpp:enumerator:`UART_PARITY_ERR`. Which one occurred is reported in :cpp:member:`uart_rx_error_event_data_t::type`.
+
+- :cpp:member:`uart_event_callbacks_t::on_tx_done` sets a callback function for the "TX done" event. This event has no counterpart in :cpp:type:`uart_event_type_t`, the event queue never reported TX activity. It is raised both when a chunk of the TX ring buffer has been handed to the TX FIFO, freeing ring buffer space, and when the transmitter goes idle. The two cases are told apart by :cpp:member:`uart_tx_done_event_data_t::flags`.
+
+Users can save their own context in :cpp:func:`uart_register_event_callbacks` as well, via the parameter ``user_data``. The user data is directly passed to each callback function.
+
+The intended usage is to install the driver with ``uart_queue`` set to NULL, so that no queue is created and no task is needed:
+
+.. code-block:: c
+
+    static IRAM_ATTR bool on_rx_data(uart_port_t uart_num, const uart_rx_data_event_data_t *edata, void *user_ctx)
+    {
+        BaseType_t task_woken = pdFALSE;
+        // Signal the application event loop, do not read the data here
+        xQueueSendFromISR((QueueHandle_t)user_ctx, &edata->size, &task_woken);
+        return task_woken == pdTRUE;
+    }
+
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, 2048, 0, 0, NULL, 0));
+
+    uart_event_callbacks_t cbs = {
+        .on_rx_data = on_rx_data,
+    };
+    ESP_ERROR_CHECK(uart_register_event_callbacks(uart_num, &cbs, event_loop_queue));
+
+Callbacks and the event queue are not mutually exclusive. If the driver is installed with a queue and callbacks are registered as well, both are fed. This makes it possible to adopt :cpp:member:`uart_event_callbacks_t::on_tx_done`, which the queue never provided, without giving up existing queue-based code.
+
+A previously registered callback is removed by calling :cpp:func:`uart_register_event_callbacks` again with the corresponding member of ``cbs`` set to NULL.
+
+.. note::
+
+    The ``edata`` pointer is **only** valid during the callback, please do not try to save this pointer and use it outside of the callback function.
+
+.. note::
+
+    :cpp:member:`uart_event_callbacks_t::on_rx_data` signals that data is available in the RX ring buffer, it does not deliver the data. :cpp:func:`uart_read_bytes` takes a mutex and must still be called from task context, and so must :cpp:func:`uart_pattern_pop_pos` after :cpp:member:`uart_event_callbacks_t::on_pattern`.
+
+IRAM Safe
+^^^^^^^^^
+
+By default, the UART interrupt is deferred when the cache is disabled for reasons like writing or erasing the main flash. This delays event delivery, and can cost received data.
+
+There is a Kconfig option :ref:`CONFIG_UART_ISR_IN_IRAM` that places the UART ISR into IRAM, so that it keeps being serviced while the cache is disabled. When it is enabled, the registered event callbacks, everything they call, and the variables they touch — including ``user_data`` — must be placed in internal RAM as well. :cpp:func:`uart_register_event_callbacks` checks this and rejects a callback that is not in IRAM with :c:macro:`ESP_ERR_INVALID_ARG`.
 
 .. _uart-api-deleting-driver:
 
@@ -431,6 +490,7 @@ Application Examples
 * :example:`peripherals/uart/uart_echo` demonstrates how to use the UART interfaces to echo back any data received on the configured UART.
 * :example:`peripherals/uart/uart_echo_rs485` demonstrates how to use the ESP32's UART software driver in RS485 half duplex transmission mode to echo any data it receives on UART port back to the sender in the RS485 network, requiring external connection of bus drivers.
 * :example:`peripherals/uart/uart_events` demonstrates how to use the UART driver to handle special UART events, read data from UART0, and echo it back to the monitoring console.
+* :example:`peripherals/uart/uart_callbacks` demonstrates how to use the UART event callbacks to drive a UART port from a single application event loop, without a dedicated task blocked on the event queue.
 * :example:`peripherals/uart/uart_repl` demonstrates how to use and connect two UARTs, allowing the UART used for stdout to send commands and receive replies from another console UART without human interaction.
 * :example:`peripherals/uart/uart_select` demonstrates the use of ``select()`` for synchronous I/O multiplexing on the UART interface, allowing for non-blocking read and write from/to various sources such as UART and sockets, where a ready resource can be served without being blocked by a busy resource.
 * :example:`peripherals/uart/nmea0183_parser` demonstrates how to parse NMEA-0183 data streams from GPS/BDS/GLONASS modules using the ESP UART Event driver and ESP event loop library, and output common information such as UTC time, latitude, longitude, altitude, and speed.

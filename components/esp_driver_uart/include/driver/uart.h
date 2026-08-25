@@ -76,7 +76,7 @@ typedef enum {
     UART_FIFO_OVF,          /*!< Triggered when the received data exceeds the capacity of the RX FIFO*/
     UART_FRAME_ERR,         /*!< Triggered when the receiver detects a data frame error*/
     UART_PARITY_ERR,        /*!< Triggered when a parity error is detected in the received data*/
-    UART_DATA_BREAK,        /*!< Internal event triggered to signal a break afte data transmission*/
+    UART_DATA_BREAK,        /*!< Internal event triggered to signal a break after data transmission*/
     UART_PATTERN_DET,       /*!< Triggered when a specified pattern  is detected in the incoming data*/
 #if SOC_UART_SUPPORT_WAKEUP_INT
     UART_WAKEUP,            /*!< Triggered when a wakeup signal is detected*/
@@ -93,6 +93,155 @@ typedef struct {
     bool timeout_flag;      /*!< UART data read timeout flag for UART_DATA event (no new data received during configured RX TOUT)*/
     /*!< If the event is caused by FIFO-full interrupt, then there will be no event with the timeout flag before the next byte coming.*/
 } uart_event_t;
+
+/**
+ * @brief Event data for the "RX data" event
+ */
+typedef struct {
+    size_t size;            /*!< Number of bytes that have just been pushed into the RX ring buffer */
+    bool timeout_flag;      /*!< Set if an RX timeout produced this event (no new data received during the
+                                 configured RX TOUT). Clear if the RX FIFO full interrupt produced it. */
+} uart_rx_data_event_data_t;
+
+/**
+ * @brief Event data for the "RX break" event
+ *
+ * @note Empty, reserved for future extension
+ */
+typedef struct {
+} uart_rx_break_event_data_t;
+
+/**
+ * @brief Event data for the "pattern detected" event
+ */
+typedef struct {
+    size_t size;            /*!< Number of bytes read out of the RX FIFO in this pass, 0 if the pattern
+                                 interrupt fired without data attached. Call uart_pattern_pop_pos() from
+                                 task context to get the position of the pattern in the ring buffer. */
+} uart_pattern_event_data_t;
+
+/**
+ * @brief Event data for the "RX error" event
+ */
+typedef struct {
+    uart_event_type_t type; /*!< The error that occurred, one of UART_FIFO_OVF, UART_BUFFER_FULL,
+                                 UART_FRAME_ERR, UART_PARITY_ERR */
+} uart_rx_error_event_data_t;
+
+/**
+ * @brief Event data for the "TX done" event
+ */
+typedef struct {
+    struct {
+        uint32_t tx_idle: 1; /*!< 0: a chunk of the TX ring buffer has been written to the TX FIFO and its
+                                  space returned to the ring buffer.
+                                  1: the transmitter has gone idle, all bytes are out on the wire. */
+    } flags;                /*!< UART TX done event flags */
+} uart_tx_done_event_data_t;
+
+#if SOC_UART_SUPPORT_WAKEUP_INT
+/**
+ * @brief Event data for the "wakeup" event
+ *
+ * @note Empty, reserved for future extension
+ */
+typedef struct {
+} uart_wakeup_event_data_t;
+#endif
+
+/**
+ * @brief Group of supported UART event callbacks
+ *
+ * @note All of these callbacks are invoked from ISR context. The implementation must not call any blocking
+ *       API, e.g. only FreeRTOS functions with the `FromISR` suffix may be used.
+ * @note The `edata` pointer handed to a callback is only valid for the duration of the call. Do not save it
+ *       and use it after the callback returns.
+ * @note Set a member to NULL to leave that event unhooked. Passing a structure with all members set to NULL
+ *       deregisters the previously registered callbacks.
+ * @note When CONFIG_UART_ISR_IN_IRAM is enabled, the callbacks themselves and any function they call must be
+ *       placed in IRAM, and the variables they touch (including the user context) must be in internal RAM.
+ */
+typedef struct {
+    /**
+     * @brief "RX data" event callback prototype
+     *
+     * Invoked after data read out of the RX FIFO has been pushed into the RX ring buffer. This signals that
+     * data is available, it does not deliver the data: uart_read_bytes() takes a mutex and must still be
+     * called from task context.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "RX data" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_rx_data)(uart_port_t uart_num, const uart_rx_data_event_data_t *edata, void *user_ctx);
+
+    /**
+     * @brief "RX break" event callback prototype
+     *
+     * Invoked when the receiver detects a NULL character, matching the UART_BREAK event.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "RX break" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_rx_break)(uart_port_t uart_num, const uart_rx_break_event_data_t *edata, void *user_ctx);
+
+    /**
+     * @brief "Pattern detected" event callback prototype
+     *
+     * Invoked on pattern detection, matching the UART_PATTERN_DET event.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "Pattern detected" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_pattern)(uart_port_t uart_num, const uart_pattern_event_data_t *edata, void *user_ctx);
+
+    /**
+     * @brief "RX error" event callback prototype
+     *
+     * Invoked on RX FIFO overflow, RX ring buffer full, frame error and parity error, matching the
+     * UART_FIFO_OVF, UART_BUFFER_FULL, UART_FRAME_ERR and UART_PARITY_ERR events.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "RX error" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_rx_error)(uart_port_t uart_num, const uart_rx_error_event_data_t *edata, void *user_ctx);
+
+    /**
+     * @brief "TX done" event callback prototype
+     *
+     * Invoked when a chunk of the TX ring buffer has been handed to the TX FIFO, freeing ring buffer space,
+     * and when the transmitter goes idle. The two cases are told apart by
+     * :cpp:member:`uart_tx_done_event_data_t::flags::tx_idle`. There is no matching uart_event_t, the event
+     * queue never reported TX activity.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "TX done" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_tx_done)(uart_port_t uart_num, const uart_tx_done_event_data_t *edata, void *user_ctx);
+
+#if SOC_UART_SUPPORT_WAKEUP_INT
+    /**
+     * @brief "Wakeup" event callback prototype
+     *
+     * Invoked when a wakeup signal is detected, matching the UART_WAKEUP event.
+     *
+     * @param[in] uart_num UART port number
+     * @param[in] edata "Wakeup" event data (passed by the driver)
+     * @param[in] user_ctx User data, passed from `uart_register_event_callbacks()`
+     * @return Whether a higher priority task has been unblocked by this function
+     */
+    bool (*on_wakeup)(uart_port_t uart_num, const uart_wakeup_event_data_t *edata, void *user_ctx);
+#endif
+} uart_event_callbacks_t;
 
 /**
  * @brief Install UART driver and set the UART to the default configuration.
@@ -139,6 +288,33 @@ esp_err_t uart_driver_delete(uart_port_t uart_num);
  *     - false driver is not installed
  */
 bool uart_is_driver_installed(uart_port_t uart_num);
+
+/**
+ * @brief Set event callbacks for a UART port
+ *
+ * Registering callbacks lets an application be notified of UART events from the ISR, instead of having a task
+ * block on the event queue returned by `uart_driver_install()`. The intended usage is to install the driver
+ * with `uart_queue` set to NULL and to handle everything from the callbacks, but callbacks and the event
+ * queue may also be used together, in which case both are fed.
+ *
+ * @note The registered callbacks are called in interrupt context. See `uart_event_callbacks_t` for the
+ *       restrictions this places on them.
+ * @note User can deregister a previously registered callback by calling this function and setting the
+ *       callback member in the `cbs` structure to NULL.
+ * @note When CONFIG_UART_ISR_IN_IRAM is enabled, the callback itself and functions called by it should be
+ *       placed in IRAM. The variables used in the function should be in the SRAM as well. The `user_data`
+ *       should also reside in SRAM.
+ *
+ * @param[in] uart_num UART port number, the max port number is (UART_NUM_MAX -1).
+ * @param[in] cbs Group of callback functions
+ * @param[in] user_data User data, which will be passed to callback functions directly
+ * @return
+ *      - ESP_OK: Set event callbacks successfully
+ *      - ESP_ERR_INVALID_ARG: Set event callbacks failed because of invalid argument
+ *      - ESP_ERR_INVALID_STATE: Set event callbacks failed because the driver is not installed on this port
+ *      - ESP_FAIL: Set event callbacks failed because of other error
+ */
+esp_err_t uart_register_event_callbacks(uart_port_t uart_num, const uart_event_callbacks_t *cbs, void *user_data);
 
 /**
  * @brief Set UART data bits.
