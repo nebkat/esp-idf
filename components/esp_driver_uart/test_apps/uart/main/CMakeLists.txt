@@ -1,5 +1,6 @@
 set(srcs "test_app_main.c"
-         "test_uart.c")
+         "test_uart.c"
+         "test_uart_callbacks.c")
 
 if(CONFIG_PM_ENABLE)
     list(APPEND srcs "test_uart_auto_lightsleep.c")
