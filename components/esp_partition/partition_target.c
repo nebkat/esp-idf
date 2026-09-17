@@ -226,7 +226,7 @@ bool esp_partition_is_flash_region_writable(size_t addr, size_t size)
 
 bool esp_partition_main_flash_region_safe(size_t addr, size_t size)
 {
-    if (addr <= ESP_PARTITION_TABLE_OFFSET + ESP_PARTITION_TABLE_MAX_LEN) {
+    if (addr <= esp_partition_table_get_offset() + ESP_PARTITION_TABLE_MAX_LEN) {
         return false;
     }
     const esp_partition_t *p = esp_ota_get_running_partition();
