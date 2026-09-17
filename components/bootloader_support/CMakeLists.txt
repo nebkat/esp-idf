@@ -12,6 +12,7 @@ if(esp_tee_build)
 
     set(tee_srcs "src/flash_partitions.c"
                  "src/bootloader_sha.c"
+                 "src/partition_table_offset.c"
                  "src/bootloader_common_loader.c"
                  "src/esp_image_format.c"
                  "src/bootloader_utility.c"
@@ -35,6 +36,7 @@ endif()
 set(srcs
     "src/bootloader_common.c"
     "src/bootloader_common_loader.c"
+    "src/partition_table_offset.c"
     "src/bootloader_clock_init.c"
     "src/bootloader_mem.c"
     "src/bootloader_random.c"
