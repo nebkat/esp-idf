@@ -32,8 +32,20 @@ if(NOT BOOTLOADER_BUILD)
     string(SUBSTRING "${project_name}" 0 31 PROJECT_NAME_CUT)
     message(STATUS "App \"${PROJECT_NAME_CUT}\" version: ${PROJECT_VER_CUT}")
 
-    set_source_files_properties(
-        SOURCE "esp_app_desc.c"
-        PROPERTIES COMPILE_DEFINITIONS
-        "PROJECT_VER=\"${PROJECT_VER_CUT}\"; PROJECT_NAME=\"${PROJECT_NAME_CUT}\"")
+    # A project may keep PROJECT_VER and PROJECT_NAME in a header it regenerates while
+    # building, so that a new version recompiles only this file rather than reconfiguring
+    # the project. What the header leaves undefined takes the values above.
+    idf_build_get_property(app_desc_header APP_DESC_HEADER)
+    if(app_desc_header AND NOT CONFIG_APP_PROJECT_VER_FROM_CONFIG)
+        set_source_files_properties(
+            SOURCE "esp_app_desc.c"
+            PROPERTIES COMPILE_DEFINITIONS
+            "APP_DESC_HEADER=\"${app_desc_header}\"; APP_DESC_PROJECT_VER=\"${PROJECT_VER_CUT}\"; APP_DESC_PROJECT_NAME=\"${PROJECT_NAME_CUT}\""
+            OBJECT_DEPENDS "${app_desc_header}")
+    else()
+        set_source_files_properties(
+            SOURCE "esp_app_desc.c"
+            PROPERTIES COMPILE_DEFINITIONS
+            "PROJECT_VER=\"${PROJECT_VER_CUT}\"; PROJECT_NAME=\"${PROJECT_NAME_CUT}\"")
+    endif()
 endif()
