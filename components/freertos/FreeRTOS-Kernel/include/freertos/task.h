@@ -2870,6 +2870,21 @@ BaseType_t xTaskRemoveFromEventList( const List_t * const pxEventList ) PRIVILEG
 void vTaskRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
                                         const TickType_t xItemValue ) PRIVILEGED_FUNCTION;
 
+#if ( configNUMBER_OF_CORES > 1 )
+
+/*
+ * THIS FUNCTION MUST NOT BE USED FROM APPLICATION CODE.  IT IS AN
+ * INTERFACE WHICH IS FOR THE EXCLUSIVE USE OF THE SCHEDULER.
+ *
+ * vTaskRemoveFromUnorderedEventList() for an interrupt: rather than yield, it
+ * returns pdTRUE if the unblocked task should run on the current core, which
+ * the caller reports through its pxHigherPriorityTaskWoken. Must be called with
+ * the kernel lock taken.
+ */
+    BaseType_t xTaskRemoveFromUnorderedEventListFromISR( ListItem_t * pxEventListItem,
+                                                         const TickType_t xItemValue ) PRIVILEGED_FUNCTION;
+#endif /* configNUMBER_OF_CORES > 1 */
+
 /*
  * THIS FUNCTION MUST NOT BE USED FROM APPLICATION CODE.  IT IS ONLY
  * INTENDED FOR USE WHEN IMPLEMENTING A PORT OF THE SCHEDULER AND IS

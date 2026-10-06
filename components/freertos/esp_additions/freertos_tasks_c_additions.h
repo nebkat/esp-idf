@@ -62,6 +62,24 @@ _Static_assert( tskNO_AFFINITY == ( BaseType_t ) CONFIG_FREERTOS_NO_AFFINITY, "C
 #endif /* ( !CONFIG_FREERTOS_SMP && ( configNUM_CORES > 1 ) ) */
 /*----------------------------------------------------------*/
 
+#if ( !CONFIG_FREERTOS_SMP && ( configNUM_CORES > 1 ) )
+
+/*
+ * Wrapper functions to take and release "xKerneLock" from an interrupt
+ */
+    void prvTakeKernelLockFromISR( void )
+    {
+        taskENTER_CRITICAL_ISR( &xKernelLock );
+    }
+
+    void prvReleaseKernelLockFromISR( void )
+    {
+        taskEXIT_CRITICAL_ISR( &xKernelLock );
+    }
+
+#endif /* ( !CONFIG_FREERTOS_SMP && ( configNUM_CORES > 1 ) ) */
+/*----------------------------------------------------------*/
+
 #if ( CONFIG_FREERTOS_SMP && ( configNUM_CORES > 1 ) )
 
 /*

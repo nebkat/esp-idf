@@ -391,7 +391,7 @@ EventBits_t xEventGroupClearBits( EventGroupHandle_t xEventGroup,
  * @endcode
  * \ingroup EventGroup
  */
-#if ( configUSE_TRACE_FACILITY == 1 )
+#if ( configNUMBER_OF_CORES > 1 ) || ( configUSE_TRACE_FACILITY == 1 )
     BaseType_t xEventGroupClearBitsFromISR( EventGroupHandle_t xEventGroup,
                                             const EventBits_t uxBitsToClear ) PRIVILEGED_FUNCTION;
 #else
@@ -536,7 +536,7 @@ EventBits_t xEventGroupSetBits( EventGroupHandle_t xEventGroup,
  * @endcode
  * \ingroup EventGroup
  */
-#if ( configUSE_TRACE_FACILITY == 1 )
+#if ( configNUMBER_OF_CORES > 1 ) || ( configUSE_TRACE_FACILITY == 1 )
     BaseType_t xEventGroupSetBitsFromISR( EventGroupHandle_t xEventGroup,
                                           const EventBits_t uxBitsToSet,
                                           BaseType_t * pxHigherPriorityTaskWoken ) PRIVILEGED_FUNCTION;

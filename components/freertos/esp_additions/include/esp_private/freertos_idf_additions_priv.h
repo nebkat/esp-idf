@@ -161,8 +161,9 @@
  * tasks.c. Thus, all accesses of the kernel data structures inside tasks.c will
  * handle the taking/releasing of the "xKerneLock".
  *
- * This functions is meant to be called by xEventGroupSetBits() and
- * vEventGroupDelete() as both those functions will directly access event lists
+ * This functions is meant to be called by xEventGroupSetBits(),
+ * xEventGroupSetBitsFromISR() and vEventGroupDelete() as those functions will
+ * directly access event lists
  * (which are kernel data structures). Thus, a wrapper function must be provided
  * to take/release the "xKernelLock" from outside tasks.c.
  */
@@ -170,6 +171,8 @@
 
     void prvTakeKernelLock( void );
     void prvReleaseKernelLock( void );
+    void prvTakeKernelLockFromISR( void );
+    void prvReleaseKernelLockFromISR( void );
 
 #endif /* ( !CONFIG_FREERTOS_SMP && ( configNUM_CORES > 1 ) ) */
 

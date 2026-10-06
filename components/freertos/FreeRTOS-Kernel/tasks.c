@@ -4039,10 +4039,11 @@ void vTaskPlaceOnUnorderedEventList( List_t * pxEventList,
 #endif /* configNUMBER_OF_CORES > 1 */
 /*-----------------------------------------------------------*/
 
-void vTaskRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
-                                        const TickType_t xItemValue )
+static BaseType_t prvRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
+                                                   const TickType_t xItemValue )
 {
     TCB_t * pxUnblockedTCB;
+    BaseType_t xYieldRequired = pdFALSE;
     /* Get current core ID as we can no longer be preempted. */
     const BaseType_t xCurCoreID = portGET_CORE_ID();
 
@@ -4123,9 +4124,9 @@ void vTaskRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
              * a context switch is required. */
             #if ( configNUM_CORES > 1 )
 
-                /* In SMP mode, this function is called from a critical section, so we
-                 * yield the current core to schedule the unblocked task. */
-                portYIELD_WITHIN_API();
+                /* In SMP mode, this function is called from a critical section, so the
+                 * caller yields the current core to schedule the unblocked task. */
+                xYieldRequired = pdTRUE;
             #else /* configNUM_CORES > 1 */
 
                 /* In single-core mode, this function is called with the scheduler suspended
@@ -4135,7 +4136,30 @@ void vTaskRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
             #endif /* configNUM_CORES > 1 */
         }
     }
+
+    return xYieldRequired;
 }
+/*-----------------------------------------------------------*/
+
+void vTaskRemoveFromUnorderedEventList( ListItem_t * pxEventListItem,
+                                        const TickType_t xItemValue )
+{
+    if( prvRemoveFromUnorderedEventList( pxEventListItem, xItemValue ) == pdTRUE )
+    {
+        portYIELD_WITHIN_API();
+    }
+}
+/*-----------------------------------------------------------*/
+
+#if ( configNUM_CORES > 1 )
+
+    BaseType_t xTaskRemoveFromUnorderedEventListFromISR( ListItem_t * pxEventListItem,
+                                                         const TickType_t xItemValue )
+    {
+        return prvRemoveFromUnorderedEventList( pxEventListItem, xItemValue );
+    }
+
+#endif /* configNUM_CORES > 1 */
 /*-----------------------------------------------------------*/
 
 void vTaskSetTimeOutState( TimeOut_t * const pxTimeOut )

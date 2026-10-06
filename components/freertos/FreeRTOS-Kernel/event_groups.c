@@ -86,6 +86,17 @@ typedef struct EventGroupDef_t
 /*-----------------------------------------------------------*/
 
 /*
+ * Set uxBitsToSet and unblock every task the new value satisfies.  Must be
+ * called with the event group's lock and, on multi-core targets, the kernel
+ * lock taken.  On multi-core targets, xFromISR selects unblocking that reports
+ * rather than performs a context switch, and the return value is then pdTRUE if
+ * an unblocked task should run on the current core.
+ */
+static BaseType_t prvSetBitsLocked( EventGroup_t * pxEventBits,
+                                    const EventBits_t uxBitsToSet,
+                                    const BaseType_t xFromISR ) PRIVILEGED_FUNCTION;
+
+/*
  * Test the bits set in uxCurrentEventBits to see if the wait condition is met.
  * The wait condition is defined by xWaitForAllBits.  If xWaitForAllBits is
  * pdTRUE then the wait condition is met if all the bits set in uxBitsToWaitFor
@@ -513,7 +524,30 @@ EventBits_t xEventGroupClearBits( EventGroupHandle_t xEventGroup,
 }
 /*-----------------------------------------------------------*/
 
-#if ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) )
+#if ( configNUMBER_OF_CORES > 1 )
+
+/* Multi-core targets modify event bits in a critical section rather than with
+ * the scheduler suspended, so an interrupt can do it directly instead of
+ * deferring it to the timer service task. */
+    BaseType_t xEventGroupClearBitsFromISR( EventGroupHandle_t xEventGroup,
+                                            const EventBits_t uxBitsToClear )
+    {
+        EventGroup_t * pxEventBits = xEventGroup;
+
+        configASSERT( xEventGroup );
+        configASSERT( ( uxBitsToClear & eventEVENT_BITS_CONTROL_BYTES ) == 0 );
+
+        taskENTER_CRITICAL_ISR( &( pxEventBits->xEventGroupLock ) );
+        {
+            traceEVENT_GROUP_CLEAR_BITS_FROM_ISR( xEventGroup, uxBitsToClear );
+            pxEventBits->uxEventBits &= ~uxBitsToClear;
+        }
+        taskEXIT_CRITICAL_ISR( &( pxEventBits->xEventGroupLock ) );
+
+        return pdPASS;
+    }
+
+#elif ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) )
 
     BaseType_t xEventGroupClearBitsFromISR( EventGroupHandle_t xEventGroup,
                                             const EventBits_t uxBitsToClear )
@@ -526,7 +560,7 @@ EventBits_t xEventGroupClearBits( EventGroupHandle_t xEventGroup,
         return xReturn;
     }
 
-#endif /* if ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) ) */
+#endif /* if ( configNUMBER_OF_CORES > 1 ) */
 /*-----------------------------------------------------------*/
 
 EventBits_t xEventGroupGetBitsFromISR( EventGroupHandle_t xEventGroup )
@@ -545,24 +579,116 @@ EventBits_t xEventGroupGetBitsFromISR( EventGroupHandle_t xEventGroup )
 } /*lint !e818 EventGroupHandle_t is a typedef used in other functions to so can't be pointer to const. */
 /*-----------------------------------------------------------*/
 
-EventBits_t xEventGroupSetBits( EventGroupHandle_t xEventGroup,
-                                const EventBits_t uxBitsToSet )
+static BaseType_t prvSetBitsLocked( EventGroup_t * pxEventBits,
+                                    const EventBits_t uxBitsToSet,
+                                    const BaseType_t xFromISR )
 {
     ListItem_t * pxListItem;
     ListItem_t * pxNext;
     ListItem_t const * pxListEnd;
     List_t const * pxList;
     EventBits_t uxBitsToClear = 0, uxBitsWaitedFor, uxControlBits;
-    EventGroup_t * pxEventBits = xEventGroup;
     BaseType_t xMatchFound = pdFALSE;
+    BaseType_t xYieldRequired = pdFALSE;
+
+    ( void ) xFromISR;
+
+    pxList = &( pxEventBits->xTasksWaitingForBits );
+    pxListEnd = listGET_END_MARKER( pxList ); /*lint !e826 !e740 !e9087 The mini list structure is used as the list end to save RAM.  This is checked and valid. */
+
+    pxListItem = listGET_HEAD_ENTRY( pxList );
+
+    /* Set the bits. */
+    pxEventBits->uxEventBits |= uxBitsToSet;
+
+    /* See if the new bit value should unblock any tasks. */
+    while( pxListItem != pxListEnd )
+    {
+        pxNext = listGET_NEXT( pxListItem );
+        uxBitsWaitedFor = listGET_LIST_ITEM_VALUE( pxListItem );
+        xMatchFound = pdFALSE;
+
+        /* Split the bits waited for from the control bits. */
+        uxControlBits = uxBitsWaitedFor & eventEVENT_BITS_CONTROL_BYTES;
+        uxBitsWaitedFor &= ~eventEVENT_BITS_CONTROL_BYTES;
+
+        if( ( uxControlBits & eventWAIT_FOR_ALL_BITS ) == ( EventBits_t ) 0 )
+        {
+            /* Just looking for single bit being set. */
+            if( ( uxBitsWaitedFor & pxEventBits->uxEventBits ) != ( EventBits_t ) 0 )
+            {
+                xMatchFound = pdTRUE;
+            }
+            else
+            {
+                mtCOVERAGE_TEST_MARKER();
+            }
+        }
+        else if( ( uxBitsWaitedFor & pxEventBits->uxEventBits ) == uxBitsWaitedFor )
+        {
+            /* All bits are set. */
+            xMatchFound = pdTRUE;
+        }
+        else
+        {
+            /* Need all bits to be set, but not all the bits were set. */
+        }
+
+        if( xMatchFound != pdFALSE )
+        {
+            /* The bits match.  Should the bits be cleared on exit? */
+            if( ( uxControlBits & eventCLEAR_EVENTS_ON_EXIT_BIT ) != ( EventBits_t ) 0 )
+            {
+                uxBitsToClear |= uxBitsWaitedFor;
+            }
+            else
+            {
+                mtCOVERAGE_TEST_MARKER();
+            }
+
+            /* Store the actual event flag value in the task's event list
+             * item before removing the task from the event list.  The
+             * eventUNBLOCKED_DUE_TO_BIT_SET bit is set so the task knows
+             * that is was unblocked due to its required bits matching, rather
+             * than because it timed out. */
+            #if ( configNUMBER_OF_CORES > 1 )
+                if( xFromISR != pdFALSE )
+                {
+                    if( xTaskRemoveFromUnorderedEventListFromISR( pxListItem, pxEventBits->uxEventBits | eventUNBLOCKED_DUE_TO_BIT_SET ) != pdFALSE )
+                    {
+                        xYieldRequired = pdTRUE;
+                    }
+                }
+                else
+            #endif /* configNUMBER_OF_CORES > 1 */
+            {
+                vTaskRemoveFromUnorderedEventList( pxListItem, pxEventBits->uxEventBits | eventUNBLOCKED_DUE_TO_BIT_SET );
+            }
+        }
+
+        /* Move onto the next list item.  Note pxListItem->pxNext is not
+         * used here as the list item may have been removed from the event list
+         * and inserted into the ready/pending reading list. */
+        pxListItem = pxNext;
+    }
+
+    /* Clear any bits that matched when the eventCLEAR_EVENTS_ON_EXIT_BIT
+     * bit was set in the control word. */
+    pxEventBits->uxEventBits &= ~uxBitsToClear;
+
+    return xYieldRequired;
+}
+/*-----------------------------------------------------------*/
+
+EventBits_t xEventGroupSetBits( EventGroupHandle_t xEventGroup,
+                                const EventBits_t uxBitsToSet )
+{
+    EventGroup_t * pxEventBits = xEventGroup;
 
     /* Check the user is not attempting to set the bits used by the kernel
      * itself. */
     configASSERT( xEventGroup );
     configASSERT( ( uxBitsToSet & eventEVENT_BITS_CONTROL_BYTES ) == 0 );
-
-    pxList = &( pxEventBits->xTasksWaitingForBits );
-    pxListEnd = listGET_END_MARKER( pxList ); /*lint !e826 !e740 !e9087 The mini list structure is used as the list end to save RAM.  This is checked and valid. */
 
     prvENTER_CRITICAL_OR_SUSPEND_ALL( &( pxEventBits->xEventGroupLock ) );
     #if ( configNUMBER_OF_CORES > 1 )
@@ -573,74 +699,7 @@ EventBits_t xEventGroupSetBits( EventGroupHandle_t xEventGroup,
     #endif /* configNUMBER_OF_CORES > 1 */
     {
         traceEVENT_GROUP_SET_BITS( xEventGroup, uxBitsToSet );
-
-        pxListItem = listGET_HEAD_ENTRY( pxList );
-
-        /* Set the bits. */
-        pxEventBits->uxEventBits |= uxBitsToSet;
-
-        /* See if the new bit value should unblock any tasks. */
-        while( pxListItem != pxListEnd )
-        {
-            pxNext = listGET_NEXT( pxListItem );
-            uxBitsWaitedFor = listGET_LIST_ITEM_VALUE( pxListItem );
-            xMatchFound = pdFALSE;
-
-            /* Split the bits waited for from the control bits. */
-            uxControlBits = uxBitsWaitedFor & eventEVENT_BITS_CONTROL_BYTES;
-            uxBitsWaitedFor &= ~eventEVENT_BITS_CONTROL_BYTES;
-
-            if( ( uxControlBits & eventWAIT_FOR_ALL_BITS ) == ( EventBits_t ) 0 )
-            {
-                /* Just looking for single bit being set. */
-                if( ( uxBitsWaitedFor & pxEventBits->uxEventBits ) != ( EventBits_t ) 0 )
-                {
-                    xMatchFound = pdTRUE;
-                }
-                else
-                {
-                    mtCOVERAGE_TEST_MARKER();
-                }
-            }
-            else if( ( uxBitsWaitedFor & pxEventBits->uxEventBits ) == uxBitsWaitedFor )
-            {
-                /* All bits are set. */
-                xMatchFound = pdTRUE;
-            }
-            else
-            {
-                /* Need all bits to be set, but not all the bits were set. */
-            }
-
-            if( xMatchFound != pdFALSE )
-            {
-                /* The bits match.  Should the bits be cleared on exit? */
-                if( ( uxControlBits & eventCLEAR_EVENTS_ON_EXIT_BIT ) != ( EventBits_t ) 0 )
-                {
-                    uxBitsToClear |= uxBitsWaitedFor;
-                }
-                else
-                {
-                    mtCOVERAGE_TEST_MARKER();
-                }
-
-                /* Store the actual event flag value in the task's event list
-                 * item before removing the task from the event list.  The
-                 * eventUNBLOCKED_DUE_TO_BIT_SET bit is set so the task knows
-                 * that is was unblocked due to its required bits matching, rather
-                 * than because it timed out. */
-                vTaskRemoveFromUnorderedEventList( pxListItem, pxEventBits->uxEventBits | eventUNBLOCKED_DUE_TO_BIT_SET );
-            }
-
-            /* Move onto the next list item.  Note pxListItem->pxNext is not
-             * used here as the list item may have been removed from the event list
-             * and inserted into the ready/pending reading list. */
-            pxListItem = pxNext;
-        }
-
-        /* Clear any bits that matched when the eventCLEAR_EVENTS_ON_EXIT_BIT
-         * bit was set in the control word. */
-        pxEventBits->uxEventBits &= ~uxBitsToClear;
+        ( void ) prvSetBitsLocked( pxEventBits, uxBitsToSet, pdFALSE );
     }
     #if ( configNUMBER_OF_CORES > 1 )
         /* Release the previously taken kernel lock. */
@@ -800,7 +859,39 @@ static BaseType_t prvTestWaitCondition( const EventBits_t uxCurrentEventBits,
 }
 /*-----------------------------------------------------------*/
 
-#if ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) )
+#if ( configNUMBER_OF_CORES > 1 )
+
+/* Multi-core targets set event bits in a critical section rather than with the
+ * scheduler suspended, so an interrupt can do it directly instead of deferring
+ * it to the timer service task. */
+    BaseType_t xEventGroupSetBitsFromISR( EventGroupHandle_t xEventGroup,
+                                          const EventBits_t uxBitsToSet,
+                                          BaseType_t * pxHigherPriorityTaskWoken )
+    {
+        EventGroup_t * pxEventBits = xEventGroup;
+        BaseType_t xYieldRequired;
+
+        configASSERT( xEventGroup );
+        configASSERT( ( uxBitsToSet & eventEVENT_BITS_CONTROL_BYTES ) == 0 );
+
+        taskENTER_CRITICAL_ISR( &( pxEventBits->xEventGroupLock ) );
+        prvTakeKernelLockFromISR();
+        {
+            traceEVENT_GROUP_SET_BITS_FROM_ISR( xEventGroup, uxBitsToSet );
+            xYieldRequired = prvSetBitsLocked( pxEventBits, uxBitsToSet, pdTRUE );
+        }
+        prvReleaseKernelLockFromISR();
+        taskEXIT_CRITICAL_ISR( &( pxEventBits->xEventGroupLock ) );
+
+        if( ( xYieldRequired != pdFALSE ) && ( pxHigherPriorityTaskWoken != NULL ) )
+        {
+            *pxHigherPriorityTaskWoken = pdTRUE;
+        }
+
+        return pdPASS;
+    }
+
+#elif ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) )
 
     BaseType_t xEventGroupSetBitsFromISR( EventGroupHandle_t xEventGroup,
                                           const EventBits_t uxBitsToSet,
@@ -814,7 +905,7 @@ static BaseType_t prvTestWaitCondition( const EventBits_t uxCurrentEventBits,
         return xReturn;
     }
 
-#endif /* if ( ( configUSE_TRACE_FACILITY == 1 ) && ( INCLUDE_xTimerPendFunctionCall == 1 ) && ( configUSE_TIMERS == 1 ) ) */
+#endif /* if ( configNUMBER_OF_CORES > 1 ) */
 /*-----------------------------------------------------------*/
 
 #if ( configUSE_TRACE_FACILITY == 1 )

@@ -28,6 +28,8 @@ entries:
             event_groups:xEventGroupClearBitsFromISR (noflash_text)
             event_groups:xEventGroupGetBitsFromISR (noflash_text)
             event_groups:xEventGroupSetBitsFromISR (noflash_text)
+            if FREERTOS_UNICORE = n:
+                event_groups:prvSetBitsLocked (noflash_text)
 
         # --------------------------------------------------------------------------------------------------------------
         # list.c
@@ -93,6 +95,10 @@ entries:
             if FREERTOS_UNICORE = n:
                 tasks:prvIsYieldRequiredSMP (noflash_text)
                 tasks:prvCheckTaskCanBeScheduledSMP (noflash_text)
+                tasks:prvRemoveFromUnorderedEventList (noflash_text)
+                tasks:xTaskRemoveFromUnorderedEventListFromISR (noflash_text)
+                tasks:prvTakeKernelLockFromISR (noflash_text)
+                tasks:prvReleaseKernelLockFromISR (noflash_text)
             tasks:uxTaskPriorityGetFromISR (noflash_text)
             tasks:prvTaskIsTaskSuspended (noflash_text)
             tasks:xTaskResumeFromISR (noflash_text)
