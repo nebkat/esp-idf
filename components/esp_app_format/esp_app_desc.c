@@ -19,6 +19,16 @@
 ESP_LOG_ATTR_TAG(TAG, "app_init");
 #endif
 
+#ifdef APP_DESC_HEADER
+#include APP_DESC_HEADER
+#ifndef PROJECT_VER
+#define PROJECT_VER APP_DESC_PROJECT_VER
+#endif
+#ifndef PROJECT_NAME
+#define PROJECT_NAME APP_DESC_PROJECT_NAME
+#endif
+#endif
+
 // Application version info
 #if defined(__APPLE__) && CONFIG_IDF_TARGET_LINUX
 const __attribute__((weak)) __attribute__((section("__RODATA_DESC,.rodata_desc")))  esp_app_desc_t esp_app_desc = {
