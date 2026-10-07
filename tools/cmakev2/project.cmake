@@ -3,6 +3,8 @@
 
 include_guard(GLOBAL)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/scripts/project_ver.cmake)
+
 #[[
     __init_project_name()
 
@@ -25,7 +27,8 @@ endfunction()
     1. The PROJECT_VER environment or CMake variable.
     2. The version.txt file located in the top-level project directory.
     3. The VERSION argument, if provided, in the project() macro.
-    4. The output of git describe if the project is within a Git repository.
+    4. The output of git describe if the project is within a Git repository;
+       described again as the app builds when PROJECT_VER_AT_BUILD is set.
     5. Defaults to 1 if none of the above conditions are met.
 
     The value of PROJECT_VER will be overridden later if
@@ -58,10 +61,23 @@ function(__init_project_version)
         return()
     endif()
 
-    # 4. The output of git describe if the project is within a Git repository.
-    git_describe(project_ver "${project_dir}")
+    # 4. The output of git describe if the project is within a Git repository. With
+    #    PROJECT_VER_AT_BUILD it is described again as the app builds, so the repository's
+    #    HEAD is not a configure input.
+    __get_default_value(VARIABLE PROJECT_VER_AT_BUILD
+                        DEFAULT NO
+                        OUTPUT at_build)
+    if(at_build)
+        __project_ver_describe(project_ver "${project_dir}")
+    else()
+        git_describe(project_ver "${project_dir}")
+    endif()
     if(project_ver)
         idf_build_set_property(PROJECT_VER "${project_ver}")
+        if(at_build)
+            idf_build_get_property(build_dir BUILD_DIR)
+            __project_ver_at_build("${project_dir}" "${build_dir}" "${project_ver}")
+        endif()
         return()
     endif()
 
