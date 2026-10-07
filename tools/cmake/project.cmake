@@ -122,6 +122,7 @@ __target_init("${sdkconfig}")
 # These properties can be modified in between this inclusion the the idf_build_process
 # call.
 include(${CMAKE_CURRENT_LIST_DIR}/idf.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/scripts/project_ver.cmake)
 
 # setting PYTHON variable here for compatibility only, new code should use
 # idf_build_get_property(variable PYTHON)
@@ -844,9 +845,18 @@ macro(project project_name)
                 endif()
             else()
                 # Use git describe to determine the version
-                git_describe(PROJECT_VER_GIT "${CMAKE_CURRENT_LIST_DIR}")
+                if(PROJECT_VER_AT_BUILD)
+                    # Described again as the app builds, so the repository's HEAD is not a
+                    # configure input
+                    __project_ver_describe(PROJECT_VER_GIT "${CMAKE_CURRENT_LIST_DIR}")
+                else()
+                    git_describe(PROJECT_VER_GIT "${CMAKE_CURRENT_LIST_DIR}")
+                endif()
                 if(PROJECT_VER_GIT)
                     set(project_ver ${PROJECT_VER_GIT})
+                    if(PROJECT_VER_AT_BUILD)
+                        __project_ver_at_build("${CMAKE_CURRENT_LIST_DIR}" "${build_dir}" "${project_ver}")
+                    endif()
                 else()
                     message(STATUS "Could not use 'git describe' to determine PROJECT_VER.")
                     # None of sources contain the version information. Default PROJECT_VER to 1.
