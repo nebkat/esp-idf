@@ -438,7 +438,7 @@ The following are some project/build variables that are available as build prope
   * Else, if ``PROJECT_VER`` variable is set in project CMakeLists.txt file, its value will be used.
   * Else, if the ``PROJECT_DIR/version.txt`` exists, its contents will be used as ``PROJECT_VER``.
   * Else, if ``VERSION`` argument is passed to the ``project()`` call in the CMakeLists.txt file as ``project(... VERSION x.y.z.w )`` then it will be used as ``PROJECT_VER``. The ``VERSION`` argument must be compliant with the `cmake standard <https://cmake.org/cmake/help/v3.22/command/project.html>`_.
-  * Else, if the project is located inside a Git repository, the output of git description will be used.
+  * Else, if the project is located inside a Git repository, the output of git description will be used. This makes the repository's ``HEAD`` an input of the CMake configuration, so every commit reconfigures the project. If ``PROJECT_VER_AT_BUILD`` is set in the project CMakeLists.txt file before ``project()`` (or in the environment), the version is described again every time the app builds instead, and a new commit recompiles only the app description. ``PROJECT_VER`` in CMake and in ``project_description.json`` then keeps the value from the last configuration.
   * Otherwise, ``PROJECT_VER`` will be "1".
 - ``EXTRA_PARTITION_SUBTYPES``: CMake list of extra partition subtypes. Each subtype description is a comma-separated string with ``type_name, subtype_name, numeric_value`` format. Components may add new subtypes by appending them to this list.
 
@@ -1570,6 +1570,7 @@ These are properties that describe the build. Values of build properties can be 
 - PROJECT_NAME - name of the project; set from ``idf_build_process`` PROJECT_NAME argument
 - PROJECT_DIR - directory of the project; set from ``idf_build_process`` PROJECT_DIR argument
 - PROJECT_VER - version of the project; set from ``idf_build_process`` PROJECT_VER argument
+- APP_DESC_HEADER - a header defining ``PROJECT_VER`` and/or ``PROJECT_NAME`` for the app description, in place of the build's values; for a project that regenerates its version as it builds, rewriting the header only when it changes. Ignored when :menuitem:`CONFIG_APP_PROJECT_VER_FROM_CONFIG` is set
 - PYTHON - Python interpreter used for the build; set from PYTHON environment variable if available, if not "python" is used
 - SDKCONFIG - full path to output config file; set from ``idf_build_process`` SDKCONFIG argument
 - SDKCONFIG_DEFAULTS - list of files containing default config to use in the build; set from ``idf_build_process`` SDKCONFIG_DEFAULTS argument
