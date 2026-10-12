@@ -53,6 +53,12 @@
  * while bits are pending, so one aimed at a task that switched out meanwhile is
  * taken by the next.
  *
+ * A task inside the host's C library may hold one of its locks (a pthread mutex or
+ * os_unfair_lock, which FreeRTOS cannot see), and switching it out there would strand
+ * the lock: a task waiting on it looks runnable, so the holder is never scheduled again.
+ * vPortDeferSwitches() and vPortAllowSwitches() bracket such a call; between them the
+ * tick and interrupts still run, but a switch they would make waits for the end.
+ *
  * Use of part of the standard C library requires care as some
  * functions can take pthread mutexes internally which can result in
  * deadlocks as the FreeRTOS kernel can switch tasks while they're
@@ -90,6 +96,9 @@ typedef struct THREAD
     void *pvParams;
     BaseType_t xDying;
     struct event *ev;
+    /* vPortDeferSwitches() nesting, and whether a switch waits for it to end. */
+    volatile BaseType_t uxSwitchDeferrals;
+    volatile BaseType_t xSwitchDeferred;
 } Thread_t;
 
 /*
@@ -165,6 +174,8 @@ StackType_t *pxPortInitialiseStack( StackType_t *pxTopOfStack,
     thread->pxCode = pxCode;
     thread->pvParams = pvParameters;
     thread->xDying = pdFALSE;
+    thread->uxSwitchDeferrals = 0;
+    thread->xSwitchDeferred = pdFALSE;
 
     pthread_attr_init( &xThreadAttributes );
     pthread_attr_setstack( &xThreadAttributes, pxEndOfStack, ulStackSize );
@@ -360,6 +371,46 @@ void vPortGenerateSimulatedInterrupt( uint32_t ulInterruptNumber )
 }
 /*-----------------------------------------------------------*/
 
+/* The running task's thread, if this is it. */
+static Thread_t *prvThisRunningThread( void )
+{
+    Thread_t *pxThread = __atomic_load_n( &pxRunningThread, __ATOMIC_SEQ_CST );
+
+    return ( pxThread != NULL && pthread_equal( pxThread->pthread, pthread_self() ) ) ? pxThread : NULL;
+}
+/*-----------------------------------------------------------*/
+
+void vPortDeferSwitches( void )
+{
+    Thread_t *pxThread = prvThisRunningThread();
+
+    if ( pxThread != NULL )
+    {
+        pxThread->uxSwitchDeferrals++;
+    }
+}
+/*-----------------------------------------------------------*/
+
+void vPortAllowSwitches( void )
+{
+    Thread_t *pxThread = prvThisRunningThread();
+
+    if ( pxThread == NULL || pxThread->uxSwitchDeferrals == 0 )
+    {
+        return;
+    }
+    if ( --pxThread->uxSwitchDeferrals == 0 && pxThread->xSwitchDeferred != pdFALSE )
+    {
+        pxThread->xSwitchDeferred = pdFALSE;
+        /* Inside a critical section the next tick makes it instead. */
+        if ( uxCriticalNesting == 0 )
+        {
+            vPortYield();
+        }
+    }
+}
+/*-----------------------------------------------------------*/
+
 /* Only on the running task's thread: the main thread enables interrupts too, around
  * creating tasks before the scheduler starts. */
 static void prvRaisePendingInterrupts( void )
@@ -398,9 +449,16 @@ static void prvInterruptHandler( int sig )
     if ( ulSwitchRequired != pdFALSE )
     {
         pxThreadToSuspend = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
-        vTaskSwitchContext();
-        pxThreadToResume = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
-        prvSwitchThread( pxThreadToResume, pxThreadToSuspend );
+        if ( pxThreadToSuspend->uxSwitchDeferrals != 0 )
+        {
+            pxThreadToSuspend->xSwitchDeferred = pdTRUE;
+        }
+        else
+        {
+            vTaskSwitchContext();
+            pxThreadToResume = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
+            prvSwitchThread( pxThreadToResume, pxThreadToSuspend );
+        }
     }
 
     /* Raised while this ran, or aimed at a thread that has since switched out:
@@ -499,12 +557,19 @@ static void vPortSystemTickHandler( int sig )
 */
 
 #if ( configUSE_PREEMPTION == 1 )
-    /* Select Next Task. */
-    vTaskSwitchContext();
+    if ( pxThreadToSuspend->uxSwitchDeferrals != 0 )
+    {
+        pxThreadToSuspend->xSwitchDeferred = pdTRUE;
+    }
+    else
+    {
+        /* Select Next Task. */
+        vTaskSwitchContext();
 
-    pxThreadToResume = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
+        pxThreadToResume = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
 
-    prvSwitchThread(pxThreadToResume, pxThreadToSuspend);
+        prvSwitchThread(pxThreadToResume, pxThreadToSuspend);
+    }
 #endif
 
     prvRaisePendingInterrupts();

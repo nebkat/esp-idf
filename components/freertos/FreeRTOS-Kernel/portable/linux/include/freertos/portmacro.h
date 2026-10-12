@@ -118,6 +118,15 @@ void vPortExitCritical( void );
 #define portMAX_INTERRUPTS 32
 void vPortSetInterruptHandler( uint32_t ulInterruptNumber, uint32_t ( *pvHandler )( void ) );
 void vPortGenerateSimulatedInterrupt( uint32_t ulInterruptNumber );
+
+/*
+ * Brackets a call that may take a lock of the host's C library (formatting, stdio,
+ * allocation): between them the running task is not switched out by the tick or an
+ * interrupt, which would strand the lock, though it may still block or yield itself.
+ * They nest, and do nothing outside a task.
+ */
+void vPortDeferSwitches( void );
+void vPortAllowSwitches( void );
 /*-----------------------------------------------------------*/
 
 extern void vPortThreadDying( void *pxTaskToDelete, volatile BaseType_t *pxPendYield );
