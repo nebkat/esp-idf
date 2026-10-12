@@ -44,6 +44,15 @@
  * The timer interrupt uses SIGALRM and care is taken to ensure that
  * the signal handler runs only on the thread for the current task.
  *
+ * Simulated interrupts (vPortGenerateSimulatedInterrupt()) let code outside
+ * FreeRTOS, such as a thread waiting on host I/O, interrupt the scheduler the
+ * way a peripheral does. An interrupt is a bit in a pending register; raising it
+ * sends SIG_INTERRUPT to the thread of the running task, which takes it as an ISR
+ * once it has interrupts enabled. A critical section defers it to its end, as on
+ * a CPU: re-enabling interrupts, and the end of an ISR, raise SIG_INTERRUPT again
+ * while bits are pending, so one aimed at a task that switched out meanwhile is
+ * taken by the next.
+ *
  * Use of part of the standard C library requires care as some
  * functions can take pthread mutexes internally which can result in
  * deadlocks as the FreeRTOS kernel can switch tasks while they're
@@ -72,6 +81,7 @@
 /*-----------------------------------------------------------*/
 
 #define SIG_RESUME SIGUSR1
+#define SIG_INTERRUPT SIGUSR2
 
 typedef struct THREAD
 {
@@ -102,6 +112,12 @@ static pthread_t hMainThread = ( pthread_t )NULL;
 static volatile BaseType_t uxCriticalNesting;
 /*-----------------------------------------------------------*/
 
+static uint32_t ( *pvInterruptHandlers[ portMAX_INTERRUPTS ] )( void );
+static uint32_t ulPendingInterrupts;
+/* The thread of the running task: the one interrupts are aimed at. */
+static Thread_t *pxRunningThread;
+/*-----------------------------------------------------------*/
+
 static BaseType_t xSchedulerEnd = pdFALSE;
 /*-----------------------------------------------------------*/
 
@@ -113,6 +129,8 @@ static void prvSwitchThread( Thread_t * xThreadToResume,
 static void prvSuspendSelf( Thread_t * thread);
 static void prvResumeThread( Thread_t * xThreadId );
 static void vPortSystemTickHandler( int sig );
+static void prvInterruptHandler( int sig );
+static void prvRaisePendingInterrupts( void );
 static void vPortStartFirstTask( void );
 /*-----------------------------------------------------------*/
 
@@ -173,6 +191,7 @@ void vPortStartFirstTask( void )
     Thread_t *pxFirstThread = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
 
     /* Start the first task. */
+    __atomic_store_n( &pxRunningThread, pxFirstThread, __ATOMIC_SEQ_CST );
     prvResumeThread( pxFirstThread );
 }
 /*-----------------------------------------------------------*/
@@ -239,6 +258,7 @@ void vPortEndScheduler( void )
     sigtick.sa_handler = SIG_IGN;
     sigemptyset( &sigtick.sa_mask );
     sigaction( SIGALRM, &sigtick, NULL );
+    sigaction( SIG_INTERRUPT, &sigtick, NULL );
 
     /* Signal the scheduler to exit its loop. */
     xSchedulerEnd = pdTRUE;
@@ -311,6 +331,84 @@ void vPortDisableInterrupts( void )
 void vPortEnableInterrupts( void )
 {
     pthread_sigmask( SIG_UNBLOCK, &xAllSignals, NULL );
+    /* Taken here, now that interrupts are enabled, if one is still pending. */
+    prvRaisePendingInterrupts();
+}
+/*-----------------------------------------------------------*/
+
+void vPortSetInterruptHandler( uint32_t ulInterruptNumber, uint32_t ( *pvHandler )( void ) )
+{
+    configASSERT( ulInterruptNumber < portMAX_INTERRUPTS );
+    __atomic_store_n( &pvInterruptHandlers[ ulInterruptNumber ], pvHandler, __ATOMIC_SEQ_CST );
+}
+/*-----------------------------------------------------------*/
+
+void vPortGenerateSimulatedInterrupt( uint32_t ulInterruptNumber )
+{
+    Thread_t *pxThread;
+
+    configASSERT( ulInterruptNumber < portMAX_INTERRUPTS );
+    __atomic_fetch_or( &ulPendingInterrupts, 1UL << ulInterruptNumber, __ATOMIC_SEQ_CST );
+
+    /* Before the scheduler starts, the first task takes it as it enables
+     * interrupts. */
+    pxThread = __atomic_load_n( &pxRunningThread, __ATOMIC_SEQ_CST );
+    if ( pxThread != NULL )
+    {
+        (void)pthread_kill( pxThread->pthread, SIG_INTERRUPT );
+    }
+}
+/*-----------------------------------------------------------*/
+
+/* Only on the running task's thread: the main thread enables interrupts too, around
+ * creating tasks before the scheduler starts. */
+static void prvRaisePendingInterrupts( void )
+{
+    Thread_t *pxThread = __atomic_load_n( &pxRunningThread, __ATOMIC_SEQ_CST );
+
+    if ( pxThread != NULL && pthread_equal( pxThread->pthread, pthread_self() ) &&
+         __atomic_load_n( &ulPendingInterrupts, __ATOMIC_SEQ_CST ) != 0 )
+    {
+        (void)pthread_kill( pthread_self(), SIG_INTERRUPT );
+    }
+}
+/*-----------------------------------------------------------*/
+
+static void prvInterruptHandler( int sig )
+{
+    Thread_t *pxThreadToSuspend;
+    Thread_t *pxThreadToResume;
+    uint32_t ulPending;
+    uint32_t ulSwitchRequired = pdFALSE;
+    int iSavedErrno = errno;
+
+    (void)sig;
+    uxCriticalNesting++; /* Signals are blocked in this signal handler. */
+
+    ulPending = __atomic_exchange_n( &ulPendingInterrupts, 0, __ATOMIC_SEQ_CST );
+    for ( uint32_t ulInterrupt = 0; ulPending != 0; ulInterrupt++, ulPending >>= 1 )
+    {
+        uint32_t ( *pvHandler )( void ) = __atomic_load_n( &pvInterruptHandlers[ ulInterrupt ], __ATOMIC_SEQ_CST );
+        if ( ( ulPending & 1 ) != 0 && pvHandler != NULL )
+        {
+            ulSwitchRequired |= pvHandler();
+        }
+    }
+
+    if ( ulSwitchRequired != pdFALSE )
+    {
+        pxThreadToSuspend = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
+        vTaskSwitchContext();
+        pxThreadToResume = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
+        prvSwitchThread( pxThreadToResume, pxThreadToSuspend );
+    }
+
+    /* Raised while this ran, or aimed at a thread that has since switched out:
+     * taken once this returns. */
+    prvRaisePendingInterrupts();
+
+    uxCriticalNesting--;
+    errno = iSavedErrno;
 }
 /*-----------------------------------------------------------*/
 
@@ -409,6 +507,8 @@ static void vPortSystemTickHandler( int sig )
     prvSwitchThread(pxThreadToResume, pxThreadToSuspend);
 #endif
 
+    prvRaisePendingInterrupts();
+
     uxCriticalNesting--;
 }
 /*-----------------------------------------------------------*/
@@ -479,6 +579,7 @@ static void prvSwitchThread( Thread_t *pxThreadToResume,
          */
         uxSavedCriticalNesting = uxCriticalNesting;
 
+        __atomic_store_n( &pxRunningThread, pxThreadToResume, __ATOMIC_SEQ_CST );
         prvResumeThread( pxThreadToResume );
         if ( pxThreadToSuspend->xDying )
         {
@@ -522,7 +623,7 @@ static void prvResumeThread( Thread_t *xThreadId )
 
 static void prvSetupSignalsAndSchedulerPolicy( void )
 {
-    struct sigaction sigresume, sigtick;
+    struct sigaction sigresume, sigtick, siginterrupt;
     int iRet;
 
     hMainThread = pthread_self();
@@ -560,6 +661,16 @@ static void prvSetupSignalsAndSchedulerPolicy( void )
     }
 
     iRet = sigaction( SIGALRM, &sigtick, NULL );
+    if ( iRet )
+    {
+        prvFatalError( "sigaction", errno );
+    }
+
+    siginterrupt.sa_flags = 0;
+    siginterrupt.sa_handler = prvInterruptHandler;
+    sigfillset( &siginterrupt.sa_mask );
+
+    iRet = sigaction( SIG_INTERRUPT, &siginterrupt, NULL );
     if ( iRet )
     {
         prvFatalError( "sigaction", errno );
