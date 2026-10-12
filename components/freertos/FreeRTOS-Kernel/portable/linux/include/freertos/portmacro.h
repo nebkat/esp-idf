@@ -109,6 +109,17 @@ void vPortExitCritical( void );
 
 /*-----------------------------------------------------------*/
 
+/*
+ * Simulated interrupts, as the Windows port has them: vPortGenerateSimulatedInterrupt()
+ * may be called from any thread, FreeRTOS's or not, and the handler set for the number
+ * runs as an ISR on the running task, as soon as it has interrupts enabled. A handler
+ * returns pdTRUE when it has woken a task that should run now.
+ */
+#define portMAX_INTERRUPTS 32
+void vPortSetInterruptHandler( uint32_t ulInterruptNumber, uint32_t ( *pvHandler )( void ) );
+void vPortGenerateSimulatedInterrupt( uint32_t ulInterruptNumber );
+/*-----------------------------------------------------------*/
+
 extern void vPortThreadDying( void *pxTaskToDelete, volatile BaseType_t *pxPendYield );
 extern void vPortCancelThread( void *pxTaskToDelete );
 #define portPRE_TASK_DELETE_HOOK( pvTaskToDelete, pxPendYield ) vPortThreadDying( ( pvTaskToDelete ), ( pxPendYield ) )
