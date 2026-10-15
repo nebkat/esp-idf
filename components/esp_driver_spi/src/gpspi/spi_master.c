@@ -1254,6 +1254,44 @@ clean_up:
     return ret;
 }
 
+esp_err_t SPI_MASTER_ISR_ATTR spi_device_queue_trans_isr(spi_device_handle_t handle, spi_transaction_t *trans_desc)
+{
+    esp_err_t ret = check_trans_valid(handle, trans_desc);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    spi_host_t *host = handle->host;
+
+    SPI_CHECK(!spi_bus_device_is_polling(handle), "Cannot queue new transaction while previous polling transaction is not terminated.", ESP_ERR_INVALID_STATE);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_CS_KEEP_ACTIVE) == 0, "SPI_TRANS_CS_KEEP_ACTIVE needs the bus acquired, which an ISR cannot do", ESP_ERR_INVALID_ARG);
+    // No temporary DMA buffer can be allocated in an ISR
+    SPI_CHECK(!host->bus_attr->dma_enabled || (trans_desc->flags & SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL), "an ISR can only queue transactions with SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL buffers", ESP_ERR_INVALID_ARG);
+
+    spi_trans_priv_t trans_buf = { .trans = trans_desc, };
+    ret = setup_priv_desc(host, &trans_buf);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+#ifdef CONFIG_PM_ENABLE
+    esp_pm_lock_acquire(host->bus_attr->pm_lock);
+#endif
+
+    // Nothing ever waits to receive from the transaction queue (only the SPI ISR takes from
+    // it), so no task can be woken here.
+    if (!xQueueSendFromISR(handle->trans_queue, (void *)&trans_buf, NULL)) {
+#ifdef CONFIG_PM_ENABLE
+        esp_pm_lock_release(host->bus_attr->pm_lock);
+#endif
+        uninstall_priv_desc(&trans_buf);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    // The ISR will be invoked at correct time by the lock with `spi_bus_intr_enable`.
+    return spi_bus_lock_bg_request(handle->dev_lock);
+}
+
 esp_err_t SPI_MASTER_ATTR spi_device_get_trans_result(spi_device_handle_t handle, spi_transaction_t **trans_desc, uint32_t ticks_to_wait)
 {
     BaseType_t r;

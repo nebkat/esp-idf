@@ -227,6 +227,30 @@ esp_err_t spi_bus_remove_device(spi_device_handle_t handle);
 esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *trans_desc, uint32_t ticks_to_wait);
 
 /**
+ * @brief Queue a SPI transaction from an interrupt handler.
+ *
+ * As ``spi_device_queue_trans``, but safe to call from an ISR, including a ``post_cb``: it never
+ * blocks and never allocates. A transaction that does not fit in the queue is not queued.
+ *
+ * @note On a bus with DMA enabled, the transaction must set ``SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL``
+ *       and its tx and rx buffers (or ``tx_data``/``rx_data``, which lie in the descriptor) must be
+ *       DMA-capable and aligned, since no temporary buffer can be allocated here.
+ * @note The device must not have a polling transaction in progress. The caller has to rule that
+ *       out itself: the check below only catches it, it does not close the race with a task
+ *       starting one.
+ *
+ * @param handle Device handle obtained using spi_bus_add_device()
+ * @param trans_desc Description of transaction to execute
+ * @return
+ *         - ESP_ERR_INVALID_ARG   if parameter is invalid, ``SPI_TRANS_CS_KEEP_ACTIVE`` is specified, or a buffer
+ *                                 would need a temporary DMA-capable copy
+ *         - ESP_ERR_TIMEOUT       if there was no room in the queue
+ *         - ESP_ERR_INVALID_STATE if a polling transaction of the device is in progress
+ *         - ESP_OK                on success
+ */
+esp_err_t spi_device_queue_trans_isr(spi_device_handle_t handle, spi_transaction_t *trans_desc);
+
+/**
  * @brief Get the result of a SPI transaction queued earlier by ``spi_device_queue_trans``.
  *
  * This routine will wait until a transaction to the given device
