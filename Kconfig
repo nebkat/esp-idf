@@ -591,6 +591,19 @@ mainmenu "Espressif IoT Development Framework Configuration"
                 Enabling this option currently adds an additional ~500 bytes of heap overhead
                 when an exception is thrown in user code for the first time.
 
+        config COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR
+            bool "Find unwind information by binary search"
+            default y
+            depends on COMPILER_CXX_EXCEPTIONS && !IDF_TARGET_LINUX
+            help
+                libgcc in the ESP toolchains is built without FDE sorting, so to unwind each frame of a thrown
+                exception it searches all of .eh_frame linearly. On a large application that takes tens to
+                hundreds of milliseconds per throw.
+
+                Enabling this option keeps the PC-sorted table the linker generates (.eh_frame_hdr) and looks
+                frames up in it by binary search, falling back to libgcc's search for a PC it doesn't cover.
+                The table costs 8 bytes of flash per function with unwind information, and no RAM.
+
         config COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE
             int "Emergency Pool Size"
             default 0

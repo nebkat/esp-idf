@@ -10,6 +10,9 @@ set(priv_requires)
 
 if(NOT esp_tee_build)
     list(APPEND srcs "cxx_guards.cpp" "cxx_init.cpp")
+    if(CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR)
+        list(APPEND srcs "cxx_eh_frame_hdr.c")
+    endif()
     # Make sure that pthread is in component list
     list(APPEND priv_requires pthread)
 endif()
@@ -100,6 +103,9 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE libgcc_cxx)
 
 if(NOT CONFIG_COMPILER_CXX_EXCEPTIONS)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __cxx_fatal_exception")
+elseif(CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR AND NOT esp_tee_build)
+    # Resolved from this component, which links after libgcc
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=_Unwind_Find_FDE")
 endif()
 
 # When the lock-free atomic policy is forced, verify the final executable does

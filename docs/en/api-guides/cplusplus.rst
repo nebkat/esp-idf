@@ -74,6 +74,8 @@ Additionally, it may be necessary to reserve some amount of RAM for the exceptio
 
 The amount of memory in the emergency pool can be set using the :menuitem:`CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE` variable.
 
+By default (:menuitem:`CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR`), the linker-generated ``.eh_frame_hdr`` table is kept, so that the unwind information for each frame is found by binary search. The table costs 8 bytes of flash per function with unwind information. Disabling the option saves that flash, but then every frame is looked up by a linear search of ``.eh_frame``, which makes throwing an exception slower the larger the application is.
+
 Some additional stack memory (around 200 bytes) is also used if and only if a C++ Exception is actually thrown, because it requires calling some functions from the top of the stack to initiate exception handling.
 
 The run time of code using C++ exceptions depends on what actually happens at run time.

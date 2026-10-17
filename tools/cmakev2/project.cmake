@@ -424,6 +424,9 @@ function(__init_project_configuration)
 
     if(CONFIG_ESP_SYSTEM_USE_EH_FRAME)
       list(APPEND compile_options "-fasynchronous-unwind-tables")
+    endif()
+
+    if(CONFIG_ESP_SYSTEM_USE_EH_FRAME OR CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR)
       list(APPEND link_options "-Wl,--eh-frame-hdr")
     endif()
 

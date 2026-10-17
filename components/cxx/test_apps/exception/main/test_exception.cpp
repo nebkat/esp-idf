@@ -1,8 +1,9 @@
 /*
- * SPDX-FileCopyrightText: 2021-2025 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2021-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+#include <cstdint>
 #include <stdexcept>
 #include "unity.h"
 #include "unity_test_utils.h"
@@ -203,6 +204,94 @@ TEST_CASE("c++ exceptions emergency pool", "[cxx] [exceptions]")
     TEST_ASSERT_TRUE(0 == 1);
 #endif
 }
+
+static int s_frames_unwound;
+
+struct FrameGuard {
+    ~FrameGuard()
+    {
+        s_frames_unwound++;
+    }
+};
+
+static __attribute__((noinline)) void throw_from_depth(int depth)
+{
+    FrameGuard guard;
+    if (depth == 0) {
+        throw 42;
+    }
+    throw_from_depth(depth - 1);
+}
+
+TEST_CASE("c++ exception unwinds several frames", "[cxx] [exceptions]")
+{
+    s_frames_unwound = 0;
+    int thrown_value = 0;
+    try {
+        throw_from_depth(5);
+    } catch (int e) {
+        thrown_value = e;
+    }
+    TEST_ASSERT_EQUAL(42, thrown_value);
+    TEST_ASSERT_EQUAL(6, s_frames_unwound);
+}
+
+#if CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR
+/* libgcc's struct dwarf_eh_bases (unwind-dw2-fde.h) */
+struct dwarf_eh_bases {
+    void *tbase;
+    void *dbase;
+    void *func;
+};
+
+extern "C" const void *_Unwind_Find_FDE(void *pc, dwarf_eh_bases *bases);
+extern "C" const void *__real__Unwind_Find_FDE(void *pc, dwarf_eh_bases *bases);
+extern "C" const uint8_t __eh_frame_hdr_start[];
+
+struct EhFrameHdr {
+    uint8_t version;
+    uint8_t eh_frame_ptr_enc;
+    uint8_t fde_count_enc;
+    uint8_t table_enc;
+    int32_t eh_frame_ptr;
+    uint32_t fde_count;
+};
+
+struct EhFrameHdrEntry {
+    int32_t initial_location;
+    int32_t fde;
+};
+
+static void check_find_fde(uintptr_t pc)
+{
+    dwarf_eh_bases bases = {};
+    dwarf_eh_bases real_bases = {};
+    const void *fde = _Unwind_Find_FDE((void *)pc, &bases);
+    const void *real_fde = __real__Unwind_Find_FDE((void *)pc, &real_bases);
+    TEST_ASSERT_EQUAL_PTR(real_fde, fde);
+    if (real_fde) {
+        TEST_ASSERT_EQUAL_PTR(real_bases.tbase, bases.tbase);
+        TEST_ASSERT_EQUAL_PTR(real_bases.dbase, bases.dbase);
+        TEST_ASSERT_EQUAL_PTR(real_bases.func, bases.func);
+    }
+}
+
+TEST_CASE("c++ exceptions find each FDE in .eh_frame_hdr as libgcc does", "[cxx] [exceptions]")
+{
+    const EhFrameHdr *hdr = (const EhFrameHdr *)__eh_frame_hdr_start;
+    TEST_ASSERT_GREATER_THAN(0, hdr->fde_count);
+
+    /* The table is sorted by initial location, relative to the start of .eh_frame_hdr */
+    const EhFrameHdrEntry *table = (const EhFrameHdrEntry *)(hdr + 1);
+    uintptr_t base = (uintptr_t)hdr;
+    for (uint32_t i = 0; i < hdr->fde_count; i++) {
+        check_find_fde(base + table[i].initial_location);
+        if (i + 1 < hdr->fde_count) {
+            check_find_fde(base + table[i + 1].initial_location - 1);
+        }
+    }
+}
+#endif // CONFIG_COMPILER_CXX_EXCEPTIONS_EH_FRAME_HDR
 
 extern "C" void app_main(void)
 {
