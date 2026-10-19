@@ -37,6 +37,8 @@
     /* Code marked as running out of IRAM */
     _iram_text_start = ABSOLUTE(.);
 
+    CXX_ATOMIC_MEMBERS_TEXT
+
     SECTION_MAPPINGS_WITH_PADDING(iram0_text)
   } > iram_text_seg
 

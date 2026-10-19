@@ -147,3 +147,15 @@ ASSERT((ADDR(NEXT_SECTION) == ADDR(PREV_SECTION) + SIZEOF(PREV_SECTION)), \
 #define SECTION_MAPPINGS_WITH_PADDING(SECTION_NAME) \
 \n  SECTION_MAPPINGS(SECTION_NAME) \
 \n  APP_BUILD_MINIMIZE_BINARY_CHANGES_PADDING()
+
+/**
+ * libstdc++ forces inlining of only some std::atomic member functions, so the compiler may emit
+ * the others out of line in any object that uses them, and the linker keeps one of those copies,
+ * from whichever object it reaches first. Code that runs with the cache disabled uses atomics, so
+ * keep that copy in IRAM whichever object it came from.
+ */
+#define CXX_ATOMIC_MEMBERS_TEXT \
+  *(.literal._ZNSt6atomicI* .text._ZNSt6atomicI*) \
+  *(.literal._ZNKSt6atomicI* .text._ZNKSt6atomicI*) \
+  *(.literal._ZNVSt6atomicI* .text._ZNVSt6atomicI*) \
+  *(.literal._ZNVKSt6atomicI* .text._ZNVKSt6atomicI*)
