@@ -127,6 +127,20 @@ void vPortGenerateSimulatedInterrupt( uint32_t ulInterruptNumber );
  */
 void vPortDeferSwitches( void );
 void vPortAllowSwitches( void );
+
+/*
+ * Switches the tick or an interrupt would have made inside vPortDeferSwitches(), each
+ * counted when the bracket ends, with how long it waited for that: under 10 us, 100 us,
+ * 1 ms, 10 ms, and longer. From any thread.
+ */
+#define portSWITCH_DEFERRAL_BUCKETS 5
+typedef struct
+{
+    uint32_t ulSwitches;
+    uint32_t ulWaited[ portSWITCH_DEFERRAL_BUCKETS ];
+    uint32_t ulLongestUs;
+} PortSwitchDeferralStats_t;
+void vPortGetSwitchDeferralStats( PortSwitchDeferralStats_t *pxStats );
 /*-----------------------------------------------------------*/
 
 extern void vPortThreadDying( void *pxTaskToDelete, volatile BaseType_t *pxPendYield );
