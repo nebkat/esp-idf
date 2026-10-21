@@ -99,6 +99,7 @@ typedef struct THREAD
     /* vPortDeferSwitches() nesting, and whether a switch waits for it to end. */
     volatile BaseType_t uxSwitchDeferrals;
     volatile BaseType_t xSwitchDeferred;
+    uint64_t ullSwitchDeferredSinceNs;
 } Thread_t;
 
 /*
@@ -119,6 +120,7 @@ static sigset_t xAllSignals;
 static sigset_t xSchedulerOriginalSignalMask;
 static pthread_t hMainThread = ( pthread_t )NULL;
 static volatile BaseType_t uxCriticalNesting;
+static PortSwitchDeferralStats_t xSwitchDeferralStats;
 /*-----------------------------------------------------------*/
 
 static uint32_t ( *pvInterruptHandlers[ portMAX_INTERRUPTS ] )( void );
@@ -140,6 +142,7 @@ static void prvResumeThread( Thread_t * xThreadId );
 static void vPortSystemTickHandler( int sig );
 static void prvInterruptHandler( int sig );
 static void prvRaisePendingInterrupts( void );
+static uint64_t prvGetTimeNs( void );
 static void vPortStartFirstTask( void );
 /*-----------------------------------------------------------*/
 
@@ -176,6 +179,7 @@ StackType_t *pxPortInitialiseStack( StackType_t *pxTopOfStack,
     thread->xDying = pdFALSE;
     thread->uxSwitchDeferrals = 0;
     thread->xSwitchDeferred = pdFALSE;
+    thread->ullSwitchDeferredSinceNs = 0;
 
     pthread_attr_init( &xThreadAttributes );
     pthread_attr_setstack( &xThreadAttributes, pxEndOfStack, ulStackSize );
@@ -380,6 +384,47 @@ static Thread_t *prvThisRunningThread( void )
 }
 /*-----------------------------------------------------------*/
 
+/* From the tick or an interrupt, on the running task's thread. */
+static void prvDeferSwitch( Thread_t *pxThread )
+{
+    if ( pxThread->xSwitchDeferred == pdFALSE )
+    {
+        pxThread->ullSwitchDeferredSinceNs = prvGetTimeNs();
+        pxThread->xSwitchDeferred = pdTRUE;
+    }
+}
+/*-----------------------------------------------------------*/
+
+static void prvRecordDeferredSwitch( uint64_t ullWaitedNs )
+{
+    uint64_t ullWaitedUs = ullWaitedNs / 1000;
+    uint32_t ulWaitedUs = ullWaitedUs > UINT32_MAX ? UINT32_MAX : ( uint32_t ) ullWaitedUs;
+    uint32_t ulBucket = 0;
+
+    for ( uint32_t ulLimitUs = 10; ulBucket < portSWITCH_DEFERRAL_BUCKETS - 1 && ulWaitedUs >= ulLimitUs; ulLimitUs *= 10 )
+    {
+        ulBucket++;
+    }
+    __atomic_add_fetch( &xSwitchDeferralStats.ulSwitches, 1, __ATOMIC_RELAXED );
+    __atomic_add_fetch( &xSwitchDeferralStats.ulWaited[ ulBucket ], 1, __ATOMIC_RELAXED );
+    if ( ulWaitedUs > __atomic_load_n( &xSwitchDeferralStats.ulLongestUs, __ATOMIC_RELAXED ) )
+    {
+        __atomic_store_n( &xSwitchDeferralStats.ulLongestUs, ulWaitedUs, __ATOMIC_RELAXED );
+    }
+}
+/*-----------------------------------------------------------*/
+
+void vPortGetSwitchDeferralStats( PortSwitchDeferralStats_t *pxStats )
+{
+    pxStats->ulSwitches = __atomic_load_n( &xSwitchDeferralStats.ulSwitches, __ATOMIC_RELAXED );
+    for ( uint32_t ulBucket = 0; ulBucket < portSWITCH_DEFERRAL_BUCKETS; ulBucket++ )
+    {
+        pxStats->ulWaited[ ulBucket ] = __atomic_load_n( &xSwitchDeferralStats.ulWaited[ ulBucket ], __ATOMIC_RELAXED );
+    }
+    pxStats->ulLongestUs = __atomic_load_n( &xSwitchDeferralStats.ulLongestUs, __ATOMIC_RELAXED );
+}
+/*-----------------------------------------------------------*/
+
 void vPortDeferSwitches( void )
 {
     Thread_t *pxThread = prvThisRunningThread();
@@ -402,6 +447,7 @@ void vPortAllowSwitches( void )
     if ( --pxThread->uxSwitchDeferrals == 0 && pxThread->xSwitchDeferred != pdFALSE )
     {
         pxThread->xSwitchDeferred = pdFALSE;
+        prvRecordDeferredSwitch( prvGetTimeNs() - pxThread->ullSwitchDeferredSinceNs );
         /* Inside a critical section the next tick makes it instead. */
         if ( uxCriticalNesting == 0 )
         {
@@ -451,7 +497,7 @@ static void prvInterruptHandler( int sig )
         pxThreadToSuspend = prvGetThreadFromTask( xTaskGetCurrentTaskHandle() );
         if ( pxThreadToSuspend->uxSwitchDeferrals != 0 )
         {
-            pxThreadToSuspend->xSwitchDeferred = pdTRUE;
+            prvDeferSwitch( pxThreadToSuspend );
         }
         else
         {
@@ -559,7 +605,7 @@ static void vPortSystemTickHandler( int sig )
 #if ( configUSE_PREEMPTION == 1 )
     if ( pxThreadToSuspend->uxSwitchDeferrals != 0 )
     {
-        pxThreadToSuspend->xSwitchDeferred = pdTRUE;
+        prvDeferSwitch( pxThreadToSuspend );
     }
     else
     {
