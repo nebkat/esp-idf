@@ -100,9 +100,9 @@ static bool is_partition_encrypted(bool encryption_config, esp_partition_type_t 
 #endif
 }
 
-// Create linked list of partition_list_item_t structures.
-// This function is called only once, with s_partition_list_lock taken.
-static esp_err_t load_partitions(void)
+// Create linked list of partition_list_item_t structures from the table at table_offset.
+// *found tells whether a table starts there at all, valid or not.
+static esp_err_t load_partitions_at(uint32_t table_offset, bool *found)
 {
     const uint8_t *p_start;
     const uint8_t *p_end;
@@ -123,8 +123,8 @@ static esp_err_t load_partitions(void)
     esp_rom_md5_init(&context);
 #endif
 
-    uint32_t partition_align_pg_size = (ESP_PARTITION_TABLE_OFFSET) & ~(MMU_PAGE_SIZE - 1);
-    uint32_t partition_pad = ESP_PARTITION_TABLE_OFFSET - partition_align_pg_size;
+    uint32_t partition_align_pg_size = (table_offset) & ~(MMU_PAGE_SIZE - 1);
+    uint32_t partition_pad = table_offset - partition_align_pg_size;
 
 #if CONFIG_IDF_TARGET_LINUX
     esp_err_t err = esp_partition_file_mmap(&p_start);
@@ -142,6 +142,8 @@ static esp_err_t load_partitions(void)
     // calculate partition address within mmap-ed region
     p_start += partition_pad;
     p_end = p_start + mapped_size;
+
+    *found = ((const esp_partition_info_t *) p_start)->magic == ESP_PARTITION_MAGIC;
 
     for (const uint8_t *p_entry = p_start; p_entry < p_end; p_entry += sizeof(esp_partition_info_t)) {
         esp_partition_info_t entry;
@@ -248,6 +250,25 @@ static esp_err_t load_partitions(void)
     spi_flash_munmap(handle);
 #endif
 
+    return err;
+}
+
+// This function is called only once, with s_partition_list_lock taken.
+static esp_err_t load_partitions(void)
+{
+    bool found = false;
+    esp_err_t err = load_partitions_at(ESP_PARTITION_TABLE_OFFSET, &found);
+#if CONFIG_PARTITION_TABLE_FALLBACK_OFFSET
+    if (!found || err != ESP_OK) {
+        ESP_LOGW(TAG, "No valid partition table at 0x%x, attempting fallback at 0x%x",
+                 ESP_PARTITION_TABLE_OFFSET, CONFIG_PARTITION_TABLE_FALLBACK_OFFSET);
+        // A fallback that fails too leaves the main table's error, which says why it was not used.
+        bool fallback_found = false;
+        if (load_partitions_at(CONFIG_PARTITION_TABLE_FALLBACK_OFFSET, &fallback_found) == ESP_OK && fallback_found) {
+            err = ESP_OK;
+        }
+    }
+#endif
     return err;
 }
 

@@ -169,6 +169,18 @@ menu "Partition Table"
             the first partition must start at PARTITION_TABLE_OFFSET + 0x1000, since the partition table occupies
             0x1000 bytes of flash space.
 
+    config PARTITION_TABLE_FALLBACK_OFFSET
+        hex "Offset of the partition table the app falls back to"
+        default 0x0
+        depends on !IDF_TARGET_LINUX
+        help
+            Where the app reads the partition table when the one at PARTITION_TABLE_OFFSET is missing or
+            invalid, so that an app built for a moved partition table still runs on flash laid out for the
+            previous offset, under the bootloader built for it, until something rewrites the layout. 0 disables
+            the fallback.
+
+            Only the app falls back. The bootloader reads the table at PARTITION_TABLE_OFFSET alone.
+
     config PARTITION_TABLE_MD5
         bool "Generate an MD5 checksum for the partition table"
         default y
