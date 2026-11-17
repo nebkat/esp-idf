@@ -41,6 +41,9 @@ void flockfile(FILE *);
 void funlockfile(FILE *);
 FILE *open_memstream(char **, size_t *);
 
+/* picolibc 1.8.11 declares fopencookie itself when __GNU_VISIBLE */
+#if !(__GNU_VISIBLE && (__PICOLIBC__ > 1 || (__PICOLIBC__ == 1 && \
+      (__PICOLIBC_MINOR__ > 8 || (__PICOLIBC_MINOR__ == 8 && __PICOLIBC_PATCHLEVEL__ >= 11)))))
 typedef ssize_t cookie_read_function_t(void *cookie, char *buf, size_t n);
 typedef ssize_t cookie_write_function_t(void *cookie, const char *buf, size_t n);
 typedef int cookie_seek_function_t(void *cookie, __off_t *off, int whence);
@@ -54,6 +57,7 @@ typedef struct {
     cookie_close_function_t *close;
 } cookie_io_functions_t;
 FILE *fopencookie(void *cookie, const char *mode, cookie_io_functions_t functions);
+#endif
 #endif
 
 #ifdef __cplusplus
