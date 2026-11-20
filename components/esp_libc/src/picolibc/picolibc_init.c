@@ -25,6 +25,9 @@
 #include "esp_heap_caps.h"
 #include "rom/libc_stubs.h"
 
+/* POSIX leaves the declaration to the application; picolibc 1.8.12 dropped it from <sys/unistd.h> */
+extern char **environ;
+
 #if !(CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2)
 static void esp_cleanup_r(struct _reent *rptr)
 {

@@ -14,7 +14,7 @@
 #include "esp_rom_sys.h"
 #include "esp_stdio.h"
 #include "esp_vfs.h"
-#include <sys/errno.h>
+#include <errno.h>
 
 #if CONFIG_VFS_SUPPORT_IO
 
