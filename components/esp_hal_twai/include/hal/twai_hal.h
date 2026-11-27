@@ -39,6 +39,7 @@ typedef union twai_ll_frame_buffer_t twai_hal_frame_t;
 #define TWAI_HAL_STATE_FLAG_TX_BUFF_OCCUPIED    (1 << 5)    //Transmit buffer is occupied
 #define TWAI_HAL_STATE_FLAG_TX_RETRY_PENDING    (1 << 6)    //A failed single shot attempt is to be re-sent by twai_hal_retry_tx()
 #define TWAI_HAL_STATE_FLAG_TX_NEED_RETRY       (1 << 7)    //TX needs to be restarted due to errata workarounds
+#define TWAI_HAL_STATE_FLAG_TX_ARB_LOST         (1 << 8)    //The current single shot attempt lost arbitration
 
 //Interrupt Events
 #define TWAI_HAL_EVENT_BUS_OFF                  (1 << 0)
