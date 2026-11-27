@@ -60,6 +60,7 @@ typedef struct {
  */
 typedef struct {
     bool is_tx_success;                 /**< Indicate if frame send successful, refer `on_error` callback for fail reason if send failed */
+    bool is_tx_aborted;                 /**< The frame was not sent because `twai_node_abort_tx` aborted it */
     const twai_frame_t *done_tx_frame;  /**< Pointer to the frame that has been transmitted */
 } twai_tx_done_event_data_t;
 

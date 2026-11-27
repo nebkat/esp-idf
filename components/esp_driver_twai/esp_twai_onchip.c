@@ -70,6 +70,8 @@ typedef struct {
     atomic_bool hw_busy;
     atomic_bool rx_isr;
     const twai_frame_t *p_curr_tx[TWAI_HAL_TX_BUFFER_SLOT_NUM];
+    portMUX_TYPE tx_abort_lock;
+    const twai_frame_t *tx_abort_frame;     // the frame in slot 0 that `_node_abort_tx` asked to abort, guarded by tx_abort_lock
     twai_hal_frame_t rcv_buff;
 } twai_onchip_ctx_t;
 
@@ -200,9 +202,17 @@ static uint8_t _node_start_tx_batch_from_isr(twai_onchip_ctx_t *node, BaseType_t
     return tx_idx;
 }
 
+static void _node_drop_tx_abort(twai_onchip_ctx_t *node)
+{
+    portENTER_CRITICAL_SAFE(&node->tx_abort_lock);
+    node->tx_abort_frame = NULL;
+    portEXIT_CRITICAL_SAFE(&node->tx_abort_lock);
+}
+
 static void _node_mark_tx_idle(twai_onchip_ctx_t *node)
 {
     memset(node->p_curr_tx, 0, sizeof(node->p_curr_tx));
+    _node_drop_tx_abort(node);
     atomic_store(&node->hw_busy, false);
 }
 
@@ -264,6 +274,7 @@ static void _node_isr_main(void *arg)
             if (twai_ctx->idle_sem) {
                 // permit mode: the frame in flight (if any) is lost, hand its permit back
                 memset(twai_ctx->p_curr_tx, 0, sizeof(twai_ctx->p_curr_tx));
+                _node_drop_tx_abort(twai_ctx);
                 if (atomic_exchange(&twai_ctx->hw_busy, false)) {
                     BaseType_t sem_yield = pdFALSE;
                     xSemaphoreGiveFromISR(twai_ctx->idle_sem, &sem_yield);
@@ -304,8 +315,14 @@ static void _node_isr_main(void *arg)
     }
 
 #if !SOC_HAS(TWAI_FD)
-    // re-send a failed attempt only now, a command written after the transmit command can clear it
-    twai_hal_retry_tx(twai_ctx->hal);
+    // re-send a failed attempt only now, a command written after the transmit command can clear it,
+    // or complete it unsent if it is being aborted
+    portENTER_CRITICAL_ISR(&twai_ctx->tx_abort_lock);
+    bool abort_tx = twai_ctx->tx_abort_frame;
+    portEXIT_CRITICAL_ISR(&twai_ctx->tx_abort_lock);
+    if (twai_hal_retry_tx(twai_ctx->hal, abort_tx)) {
+        events |= TWAI_HAL_EVENT_TX0_DONE;
+    }
 #endif
 
     // deal TX event
@@ -316,7 +333,14 @@ static void _node_isr_main(void *arg)
             uint8_t tx_idx = __builtin_ctz(slot_event) / 2;
             assert((tx_idx < twai_ctx->tx_slot_num) && twai_ctx->p_curr_tx[tx_idx]);
             const twai_frame_t *done_frame = twai_ctx->p_curr_tx[tx_idx];
+            bool is_tx_success = events & TWAI_HAL_EVENT_TX_SUCC_SLOT(tx_idx);
+            portENTER_CRITICAL_ISR(&twai_ctx->tx_abort_lock);
             twai_ctx->p_curr_tx[tx_idx] = NULL;
+            bool is_tx_aborted = !is_tx_success && twai_ctx->tx_abort_frame == done_frame;
+            if (twai_ctx->tx_abort_frame == done_frame) {
+                twai_ctx->tx_abort_frame = NULL;
+            }
+            portEXIT_CRITICAL_ISR(&twai_ctx->tx_abort_lock);
             if (twai_ctx->idle_sem) {
                 // permit mode: the node is fully idle again before the permit is handed back,
                 // so a transmit from inside `on_tx_done` can take it and start the next frame at once
@@ -327,7 +351,8 @@ static void _node_isr_main(void *arg)
             }
             if (twai_ctx->cbs.on_tx_done) {
                 twai_tx_done_event_data_t tx_ev = {
-                    .is_tx_success = (events & TWAI_HAL_EVENT_TX_SUCC_SLOT(tx_idx)),  // find 'on_error_cb' if not success
+                    .is_tx_success = is_tx_success,  // find 'on_error_cb' if not success
+                    .is_tx_aborted = is_tx_aborted,
                     .done_tx_frame = done_frame,
                 };
                 do_yield |= twai_ctx->cbs.on_tx_done(&twai_ctx->api_base, &tx_ev, twai_ctx->user_data);
@@ -712,6 +737,25 @@ static esp_err_t _node_queue_tx(twai_node_handle_t node, const twai_frame_t *fra
     return ESP_OK;
 }
 
+#if !SOC_HAS(TWAI_FD)
+static esp_err_t _node_abort_tx(twai_node_handle_t node, const twai_frame_t *frame)
+{
+    twai_onchip_ctx_t *twai_ctx = __containerof(node, twai_onchip_ctx_t, api_base);
+    // Each attempt is sent single shot and the ISR decides whether to send another, so the abort lands there.
+    // The controller's abort command can't be used: it sets TX complete, the same as a sent frame.
+    ESP_RETURN_ON_FALSE_ISR(twai_ctx->hal->retry_cnt != -1, ESP_ERR_NOT_SUPPORTED, TAG, "abort needs a bounded fail_retry_cnt");
+
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
+    portENTER_CRITICAL_SAFE(&twai_ctx->tx_abort_lock);
+    if (twai_ctx->p_curr_tx[0] == frame) {
+        twai_ctx->tx_abort_frame = frame;
+        ret = ESP_OK;
+    }
+    portEXIT_CRITICAL_SAFE(&twai_ctx->tx_abort_lock);
+    return ret;
+}
+#endif
+
 static esp_err_t _node_wait_tx_all_done(twai_node_handle_t node, int timeout)
 {
     twai_onchip_ctx_t *twai_ctx = __containerof(node, twai_onchip_ctx_t, api_base);
@@ -789,6 +833,7 @@ esp_err_t twai_new_node_onchip(const twai_onchip_node_config_t *node_config, twa
     ESP_GOTO_ON_FALSE(ctrlr_id != -1, ESP_ERR_NOT_FOUND, err, TAG, "Controller not available");
     node->ctrlr_id = ctrlr_id;
     node->hal = (twai_hal_context_t *)(node + 1);   //hal context is place at end of driver context
+    portMUX_INITIALIZE(&node->tx_abort_lock);
     node->curr_clk_src = node_config->clk_src ? node_config->clk_src : TWAI_CLK_SRC_DEFAULT;
     node->enable_scheduled_tx = node_config->flags.enable_scheduled_tx;
     ESP_GOTO_ON_ERROR(esp_clk_tree_src_get_freq_hz(node->curr_clk_src, ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &node->src_freq_hz), err, TAG, "get clock source frequency failed");
@@ -910,6 +955,9 @@ esp_err_t twai_new_node_onchip(const twai_onchip_node_config_t *node_config, twa
     node->api_base.register_cbs = _node_register_callbacks;
     node->api_base.transmit = _node_queue_tx;
     node->api_base.transmit_wait_done = _node_wait_tx_all_done;
+#if !SOC_HAS(TWAI_FD)
+    node->api_base.abort_tx = _node_abort_tx;
+#endif
     node->api_base.receive_isr = _node_parse_rx;
     node->api_base.get_info = _node_get_status;
 

@@ -104,6 +104,17 @@ struct twai_node_base {
     esp_err_t (*transmit_wait_done)(struct twai_node_base *node, int timeout);
 
     /**
+     * @brief Abort a frame in the controller that has not been sent yet
+     *
+     * @param[in] node Pointer to the TWAI node base
+     * @param[in] frame The frame to abort
+     * @return esp_err_t
+     *      - ESP_OK: Abort requested, the frame completes through `on_tx_done`
+     *      - ESP_ERR_NOT_FOUND: The frame is not in the controller
+     */
+    esp_err_t (*abort_tx)(struct twai_node_base *node, const twai_frame_t *frame);
+
+    /**
      * @brief Receive a TWAI frame through the ISR callback
      *
      * @param[in] node Pointer to the TWAI node base

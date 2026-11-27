@@ -394,8 +394,10 @@ void twai_hal_set_tx_buffer_and_transmit(twai_hal_context_t *hal_ctx, twai_hal_f
  * call this after the RX frames have been read.
  *
  * @param hal_ctx Context of the HAL layer
+ * @param abort Release the frame unsent instead of re-sending it
+ * @return True if the pending frame was released unsent, so the caller completes it as TWAI_HAL_EVENT_TX0_DONE without success
  */
-void twai_hal_retry_tx(twai_hal_context_t *hal_ctx);
+bool twai_hal_retry_tx(twai_hal_context_t *hal_ctx, bool abort);
 #endif
 
 /**

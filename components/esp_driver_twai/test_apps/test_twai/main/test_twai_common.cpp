@@ -625,6 +625,59 @@ TEST_CASE("test arb lost and stuff err", "[twai]")
     TEST_ESP_OK(twai_node_delete(node_hdl));
 }
 
+#if !SOC_HAS(TWAI_FD)
+static IRAM_ATTR bool test_abort_tx_done_cb(twai_node_handle_t handle, const twai_tx_done_event_data_t *edata, void *user_ctx)
+{
+    *(twai_tx_done_event_data_t *)user_ctx = *edata;
+    return false;
+}
+
+TEST_CASE("twai abort tx", "[twai]")
+{
+    twai_node_handle_t node_hdl;
+    twai_onchip_node_config_t node_config = {};
+    node_config.io_cfg.tx = TEST_TX_GPIO;
+    node_config.io_cfg.rx = TEST_TX_GPIO;   // Using same pin for test without transceiver, so no node acknowledges
+    node_config.io_cfg.quanta_clk_out = GPIO_NUM_NC;
+    node_config.io_cfg.bus_off_indicator = GPIO_NUM_NC;
+    node_config.bit_timing.bitrate = 50000;
+    node_config.tx_queue_depth = 1;
+    node_config.fail_retry_cnt = 15;
+    TEST_ESP_OK(twai_new_node_onchip(&node_config, &node_hdl));
+
+    twai_tx_done_event_data_t tx_done = {};
+    twai_event_callbacks_t user_cbs = {};
+    user_cbs.on_tx_done = test_abort_tx_done_cb;
+    TEST_ESP_OK(twai_node_register_event_callbacks(node_hdl, &user_cbs, &tx_done));
+    TEST_ESP_OK(twai_node_enable(node_hdl));
+
+    twai_frame_t tx_frame = {};
+    tx_frame.header.id = 0x123;
+    tx_frame.buffer = (uint8_t *)"abort";
+    tx_frame.buffer_len = 5;
+    TEST_ESP_OK(twai_node_transmit(node_hdl, &tx_frame, 0));
+    // every attempt fails on the missing ACK, about 2 ms each, abort while most of the 16 attempts remain
+    esp_rom_delay_us(5000);
+    TEST_ESP_OK(twai_node_abort_tx(node_hdl, &tx_frame));
+    TEST_ESP_OK(twai_node_transmit_wait_all_done(node_hdl, 10));
+    TEST_ASSERT_EQUAL_PTR(&tx_frame, tx_done.done_tx_frame);
+    TEST_ASSERT_FALSE(tx_done.is_tx_success);
+    TEST_ASSERT_TRUE(tx_done.is_tx_aborted);
+    TEST_ESP_ERR(ESP_ERR_NOT_FOUND, twai_node_abort_tx(node_hdl, &tx_frame));
+
+    // without an abort the frame fails once its attempts run out
+    tx_done = {};
+    TEST_ESP_OK(twai_node_transmit(node_hdl, &tx_frame, 0));
+    TEST_ESP_OK(twai_node_transmit_wait_all_done(node_hdl, 500));
+    TEST_ASSERT_EQUAL_PTR(&tx_frame, tx_done.done_tx_frame);
+    TEST_ASSERT_FALSE(tx_done.is_tx_success);
+    TEST_ASSERT_FALSE(tx_done.is_tx_aborted);
+
+    TEST_ESP_OK(twai_node_disable(node_hdl));
+    TEST_ESP_OK(twai_node_delete(node_hdl));
+}
+#endif
+
 static void test_send_wait_task(void *args)
 {
     const char *task_name = pcTaskGetName(NULL);

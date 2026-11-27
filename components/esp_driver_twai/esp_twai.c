@@ -141,6 +141,14 @@ esp_err_t twai_node_transmit(twai_node_handle_t node, const twai_frame_t *frame,
     return node->transmit(node, frame, timeout_ms);
 }
 
+esp_err_t twai_node_abort_tx(twai_node_handle_t node, const twai_frame_t *frame)
+{
+    ESP_RETURN_ON_FALSE_ISR(node && frame, ESP_ERR_INVALID_ARG, TAG, "invalid argument: null");
+    ESP_RETURN_ON_FALSE_ISR(node->abort_tx, ESP_ERR_NOT_SUPPORTED, TAG, "abort_tx is not supported");
+
+    return node->abort_tx(node, frame);
+}
+
 esp_err_t twai_node_transmit_wait_all_done(twai_node_handle_t node, int timeout_ms)
 {
     ESP_RETURN_ON_FALSE(node, ESP_ERR_INVALID_ARG, TAG, "invalid argument: null handle");

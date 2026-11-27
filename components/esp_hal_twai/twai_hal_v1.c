@@ -452,15 +452,20 @@ void twai_hal_set_tx_buffer_and_transmit(twai_hal_context_t *hal_ctx, twai_hal_f
 #endif  //TWAI_LL_HAS_RX_FRAME_ISSUE || TWAI_LL_HAS_RX_FIFO_ISSUE
 }
 
-void twai_hal_retry_tx(twai_hal_context_t *hal_ctx)
+bool twai_hal_retry_tx(twai_hal_context_t *hal_ctx, bool abort)
 {
     if (!(hal_ctx->state_flags & TWAI_HAL_STATE_FLAG_TX_RETRY_PENDING)) {
-        return;
+        return false;
     }
     TWAI_HAL_CLEAR_BITS(hal_ctx->state_flags, TWAI_HAL_STATE_FLAG_TX_RETRY_PENDING);
+    if (abort) {
+        TWAI_HAL_CLEAR_BITS(hal_ctx->state_flags, TWAI_HAL_STATE_FLAG_TX_BUFF_OCCUPIED);
+        return true;
+    }
     twai_hal_frame_t *tx_frame = (twai_hal_frame_t *)hal_ctx->tx_retry_frame;
     twai_ll_set_tx_buffer(hal_ctx->dev, tx_frame);
     twai_hal_start_tx(hal_ctx, tx_frame);
+    return false;
 }
 
 uint32_t twai_hal_get_rx_msg_count(twai_hal_context_t *hal_ctx)

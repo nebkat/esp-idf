@@ -136,6 +136,25 @@ esp_err_t twai_node_transmit(twai_node_handle_t node, const twai_frame_t *frame,
 esp_err_t twai_node_transmit_wait_all_done(twai_node_handle_t node, int timeout_ms);
 
 /**
+ * @brief Abort a frame in the controller that has not been sent yet
+ *
+ * The frame still completes through `on_tx_done`. A frame that has not been sent completes with `is_tx_aborted` set.
+ * A frame already on the bus is not aborted: it finishes and completes as usual. On a node with a bounded
+ * `fail_retry_cnt`, the abort lands when the frame's current attempt ends, at most one frame on the bus later.
+ * Frames still in the driver's transmit queue can't be aborted.
+ *
+ * @note This function can be called in ISR context
+ *
+ * @param[in] node Handle to the TWAI node
+ * @param[in] frame The frame passed to `twai_node_transmit`
+ * @return  - ESP_OK: Abort requested
+ *          - ESP_ERR_INVALID_ARG: Invalid argument
+ *          - ESP_ERR_NOT_FOUND: The frame is not in the controller, it has completed or is still queued
+ *          - ESP_ERR_NOT_SUPPORTED: The controller retransmits by itself, as with a `fail_retry_cnt` of -1, or on a TWAI FD controller
+ */
+esp_err_t twai_node_abort_tx(twai_node_handle_t node, const twai_frame_t *frame);
+
+/**
  * @brief Receive a TWAI frame from 'rx_done_cb'
  *
  * @note This function can only be called from the `rx_done_cb` callback, you can't call it from a task.
